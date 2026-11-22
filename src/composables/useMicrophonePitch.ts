@@ -65,7 +65,6 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     let minMidi = Infinity
     let maxMidi = -Infinity
     let voicedCount = 0
-    let inTuneCount = 0
 
     for (let i = 0; i < list.length; i++) {
       const m = list[i]!.midi
@@ -73,8 +72,6 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
         voicedCount++
         if (m < minMidi) minMidi = m
         if (m > maxMidi) maxMidi = m
-        const cents = Math.abs((m - Math.round(m)) * 100)
-        if (cents <= 12) inTuneCount++
       }
     }
 
@@ -85,7 +82,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     return {
       min: describePitchFromMidi(minMidi, a4Hz.value),
       max: describePitchFromMidi(maxMidi, a4Hz.value),
-      accuracyPct: Math.round((inTuneCount / voicedCount) * 100),
+      semitoneSpan: Math.max(0, Math.round(maxMidi) - Math.round(minMidi)),
       voicedCount,
     }
   })

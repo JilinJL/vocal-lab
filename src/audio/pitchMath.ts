@@ -10,7 +10,6 @@ export interface PitchInfo {
   solfege: string
   jianpu: string
   cents: number
-  status: 'flat' | 'in-tune' | 'sharp'
 }
 
 export interface PitchSample {
@@ -26,8 +25,6 @@ const NOTE_NAMES_DISPLAY = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G�
 const SOLFEGE_NAMES = ['Do', 'Di', 'Re', 'Ri', 'Mi', 'Fa', 'Fi', 'Sol', 'Si', 'La', 'Li', 'Ti'] as const
 const JIANPU_NAMES = ['1', '♯1', '2', '♯2', '3', '4', '♯4', '5', '♯5', '6', '♯6', '7'] as const
 const BLACK_KEY_INDICES = new Set([1, 3, 6, 8, 10])
-
-export const IN_TUNE_CENTS_THRESHOLD = 12
 
 export function isBlackKey(midi: number): boolean {
   const index = ((Math.round(midi) % 12) + 12) % 12
@@ -88,13 +85,6 @@ export function describePitchFromMidi(
   const frequency = explicitFrequency ?? midiToFrequency(midi, a4Hz)
   const parts = midiToNoteParts(nearestMidi)
 
-  let status: PitchInfo['status'] = 'in-tune'
-  if (cents < -IN_TUNE_CENTS_THRESHOLD) {
-    status = 'flat'
-  } else if (cents > IN_TUNE_CENTS_THRESHOLD) {
-    status = 'sharp'
-  }
-
   return {
     frequency,
     midi,
@@ -107,7 +97,6 @@ export function describePitchFromMidi(
     solfege: parts.solfege,
     jianpu: parts.jianpu,
     cents,
-    status,
   }
 }
 
@@ -122,10 +111,4 @@ export function formatTimestamp(seconds: number): string {
   const secs = Math.floor(safe % 60)
   const tenths = Math.floor((safe % 1) * 10)
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`
-}
-
-export function centsStatusText(status: PitchInfo['status']): { glyph: string; label: string } {
-  if (status === 'sharp') return { glyph: '▲', label: '偏高' }
-  if (status === 'flat') return { glyph: '▼', label: '偏低' }
-  return { glyph: '●', label: '音准' }
 }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  centsStatusText,
   describePitchFromMidi,
   formatCents,
   formatTimestamp,
@@ -122,11 +121,7 @@ function yToMidi(y: number, minMidi: number, maxMidi: number): number {
   return minMidi + ratio * (maxMidi - minMidi)
 }
 
-function colorForCents(cents: number): string {
-  if (cents > 12) return '#EE7863' // sharp coral
-  if (cents < -12) return '#63B3ED' // flat cerulean
-  return '#4FD1A5' // accurate jade
-}
+const TRACE_COLOR = '#4FD1A5'
 
 function clampCenterMidi(val: number): number {
   const half = VISIBLE_SEMITONES / 2
@@ -527,7 +522,7 @@ function renderCanvas() {
     }
 
     // Group into continuous voiced phrases
-    type Pt = { x: number; y: number; midi: number; cents: number; time: number }
+    type Pt = { x: number; y: number; midi: number; time: number }
     const phrases: Pt[][] = []
     let currentPhrase: Pt[] = []
     let prevSample: PitchSample | null = null
@@ -557,8 +552,7 @@ function renderCanvas() {
 
       const x = timeToX(s.time, startTime, endTime)
       const y = midiToY(s.midi, minMidi, maxMidi)
-      const cents = (s.midi - Math.round(s.midi)) * 100
-      currentPhrase.push({ x, y, midi: s.midi, cents, time: s.time })
+      currentPhrase.push({ x, y, midi: s.midi, time: s.time })
       prevSample = s
     }
 
@@ -566,21 +560,21 @@ function renderCanvas() {
       phrases.push(currentPhrase)
     }
 
-    // Draw soft glow halo + intonation-colored smooth curve for each phrase
+    // Draw soft glow halo + crisp unified pitch trace for each phrase
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
 
     for (const phrase of phrases) {
       if (phrase.length === 1) {
         const p = phrase[0]!
-        ctx.fillStyle = colorForCents(p.cents)
+        ctx.fillStyle = TRACE_COLOR
         ctx.beginPath()
         ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2)
         ctx.fill()
         continue
       }
 
-      // Soft ambient ribbon glow beneath line
+      // Build smooth quadratic spline path once, stroke glow then foreground line
       ctx.beginPath()
       ctx.moveTo(phrase[0]!.x, phrase[0]!.y)
       for (let i = 1; i < phrase.length; i++) {
@@ -592,21 +586,14 @@ function renderCanvas() {
       }
       const last = phrase[phrase.length - 1]!
       ctx.lineTo(last.x, last.y)
+
       ctx.strokeStyle = 'rgba(79, 209, 165, 0.18)'
       ctx.lineWidth = 8
       ctx.stroke()
 
-      // Intonation-colored foreground segments
+      ctx.strokeStyle = TRACE_COLOR
       ctx.lineWidth = 2.6
-      for (let i = 1; i < phrase.length; i++) {
-        const p0 = phrase[i - 1]!
-        const p1 = phrase[i]!
-        ctx.beginPath()
-        ctx.moveTo(p0.x, p0.y)
-        ctx.lineTo(p1.x, p1.y)
-        ctx.strokeStyle = colorForCents((p0.cents + p1.cents) / 2)
-        ctx.stroke()
-      }
+      ctx.stroke()
     }
 
     // Live playhead beacon on the latest voiced point
@@ -615,12 +602,10 @@ function renderCanvas() {
       if (tail && tail.midi !== null) {
         const lx = timeToX(tail.time, startTime, endTime)
         const ly = midiToY(tail.midi, minMidi, maxMidi)
-        const cents = (tail.midi - Math.round(tail.midi)) * 100
-        const col = colorForCents(cents)
 
         ctx.beginPath()
         ctx.arc(lx, ly, 9, 0, Math.PI * 2)
-        ctx.fillStyle = `${col}33`
+        ctx.fillStyle = 'rgba(79, 209, 165, 0.22)'
         ctx.fill()
 
         ctx.beginPath()
@@ -628,7 +613,7 @@ function renderCanvas() {
         ctx.fillStyle = '#F2EDE4'
         ctx.fill()
         ctx.lineWidth = 2
-        ctx.strokeStyle = col
+        ctx.strokeStyle = TRACE_COLOR
         ctx.stroke()
       }
     }
@@ -640,7 +625,6 @@ function renderCanvas() {
     // Recompute coordinates in case of pan/scroll while hovering
     const hx = timeToX(hover.time, startTime, endTime)
     const hy = midiToY(hover.pitch.midi, minMidi, maxMidi)
-    const col = colorForCents(hover.pitch.cents)
 
     ctx.save()
     ctx.setLineDash([4, 4])
@@ -663,7 +647,7 @@ function renderCanvas() {
     // Highlighted point ring
     ctx.beginPath()
     ctx.arc(hx, hy, 10, 0, Math.PI * 2)
-    ctx.fillStyle = `${col}38`
+    ctx.fillStyle = 'rgba(79, 209, 165, 0.24)'
     ctx.fill()
 
     ctx.beginPath()
@@ -671,7 +655,7 @@ function renderCanvas() {
     ctx.fillStyle = '#F2EDE4'
     ctx.fill()
     ctx.lineWidth = 2.2
-    ctx.strokeStyle = col
+    ctx.strokeStyle = TRACE_COLOR
     ctx.stroke()
   }
 
@@ -797,11 +781,6 @@ const tooltipStyle = computed(() => {
   }
 })
 
-const tooltipStatus = computed(() => {
-  if (!hoveredInspection.value) return null
-  return centsStatusText(hoveredInspection.value.pitch.status)
-})
-
 onMounted(() => {
   const container = containerRef.value
   if (!container) return
@@ -857,7 +836,7 @@ onBeforeUnmount(() => {
 
     <!-- Floating Hover Inspection Readout -->
     <div
-      v-if="hoveredInspection && tooltipStatus"
+      v-if="hoveredInspection"
       class="hover-tooltip"
       :style="tooltipStyle"
       role="status"
@@ -878,10 +857,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="tip-bottom tabular">
         <span class="tip-freq">{{ hoveredInspection.pitch.frequency.toFixed(1) }} Hz</span>
-        <span class="tip-status" :class="`tip-${hoveredInspection.pitch.status}`">
-          <span aria-hidden="true">{{ tooltipStatus.glyph }}</span>
-          {{ tooltipStatus.label }} {{ formatCents(hoveredInspection.pitch.cents) }}
-        </span>
+        <span class="tip-cents">{{ formatCents(hoveredInspection.pitch.cents) }}</span>
       </div>
     </div>
 
@@ -1037,20 +1013,9 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.tip-status {
+.tip-cents {
+  color: var(--ink-secondary);
   font-weight: 600;
-}
-
-.tip-in-tune {
-  color: var(--pitch-accurate);
-}
-
-.tip-sharp {
-  color: var(--pitch-sharp);
-}
-
-.tip-flat {
-  color: var(--pitch-flat);
 }
 
 /* Return to live pill */

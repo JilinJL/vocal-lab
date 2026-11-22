@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  centsStatusText,
   formatCents,
   formatTimestamp,
   midiToFrequency,
@@ -17,7 +16,7 @@ interface HoverReadout {
 interface RangeSummary {
   min: PitchInfo
   max: PitchInfo
-  accuracyPct: number
+  semitoneSpan: number
   voicedCount: number
 }
 
@@ -63,12 +62,7 @@ const isLiveDimmed = computed(
   () => !props.hoveredPoint && props.isListening && !props.currentPitch && !!props.lastStablePitch,
 )
 
-const statusBadge = computed(() => {
-  if (!activePitch.value) return null
-  return centsStatusText(activePitch.value.status)
-})
-
-// Map -50..+50 cents to 0%..100% along the precision meter
+// Map -50..+50 cents to 0%..100% along the scale bar
 const needlePercent = computed(() => {
   if (!activePitch.value) return 50
   const clamped = Math.max(-50, Math.min(50, activePitch.value.cents))
@@ -94,19 +88,16 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
 <template>
   <aside class="pitch-monitor" aria-label="实时音高监测面板">
     <div class="monitor-head">
-      <span class="mode-tag" :class="{ 'is-inspect': !!hoveredPoint, 'is-live': isListening && !!currentPitch }">
+      <span
+        class="mode-tag"
+        :class="{ 'is-inspect': !!hoveredPoint, 'is-live': isListening && !!currentPitch }"
+      >
         {{ modeLabel }}
       </span>
 
-      <div
-        v-if="statusBadge && activePitch"
-        class="status-pill tabular"
-        :class="`status-${activePitch.status}`"
-      >
-        <span aria-hidden="true">{{ statusBadge.glyph }}</span>
-        <span>{{ statusBadge.label }}</span>
-        <span class="cents-num">{{ formatCents(activePitch.cents) }}</span>
-      </div>
+      <span v-if="activePitch" class="cents-pill tabular" aria-label="相对最近半音的音分偏移">
+        {{ formatCents(activePitch.cents) }}
+      </span>
     </div>
 
     <!-- Engraved-style primary note display -->
@@ -133,8 +124,8 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
       </template>
     </div>
 
-    <!-- Precision Cents Intonation Meter -->
-    <div class="cents-meter" role="group" aria-label="音分偏差表">
+    <!-- Objective Cents Offset Scale -->
+    <div class="cents-meter" role="group" aria-label="音分位置标尺">
       <div class="meter-scale tabular" aria-hidden="true">
         <span>−50¢</span>
         <span>−25</span>
@@ -143,12 +134,10 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
         <span>+50¢</span>
       </div>
       <div class="meter-track">
-        <div class="meter-sweetspot" aria-hidden="true"></div>
         <div class="meter-centerline" aria-hidden="true"></div>
         <div
           v-if="activePitch"
           class="meter-needle"
-          :class="`needle-${activePitch.status}`"
           :style="{ left: `${needlePercent}%` }"
         ></div>
       </div>
@@ -174,7 +163,7 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
       </div>
     </div>
 
-    <!-- Reference Piano Target & Session Telemetry -->
+    <!-- Reference Piano Target & Factual Vocal Range Telemetry -->
     <div class="telemetry-stack">
       <div v-if="referenceInfo" class="telemetry-row ref-row">
         <div class="ref-info">
@@ -197,14 +186,14 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
 
       <div v-if="voicedRange" class="telemetry-row range-row">
         <div class="stat-item">
-          <span class="row-label">本次音域</span>
+          <span class="row-label">记录音域</span>
           <strong class="stat-val tabular">
             {{ voicedRange.min.fullName }} – {{ voicedRange.max.fullName }}
           </strong>
         </div>
-        <div class="stat-item">
-          <span class="row-label">音准率</span>
-          <strong class="stat-val tabular">{{ voicedRange.accuracyPct }}%</strong>
+        <div class="stat-item stat-right">
+          <span class="row-label">音程跨度</span>
+          <strong class="stat-val tabular">{{ voicedRange.semitoneSpan }} 半音</strong>
         </div>
       </div>
     </div>
@@ -253,37 +242,14 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
   background-color: var(--accent-brass-soft);
 }
 
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
+.cents-pill {
   font-size: 0.78rem;
   font-weight: 600;
-  padding: 0.16rem 0.55rem;
+  padding: 0.16rem 0.56rem;
   border-radius: var(--radius-pill);
-  border: 1px solid transparent;
-}
-
-.status-in-tune {
-  color: var(--pitch-accurate);
-  background-color: var(--pitch-accurate-soft);
-  border-color: color-mix(in oklab, var(--pitch-accurate) 45%, transparent);
-}
-
-.status-sharp {
-  color: var(--pitch-sharp);
-  background-color: var(--pitch-sharp-soft);
-  border-color: color-mix(in oklab, var(--pitch-sharp) 45%, transparent);
-}
-
-.status-flat {
-  color: var(--pitch-flat);
-  background-color: var(--pitch-flat-soft);
-  border-color: color-mix(in oklab, var(--pitch-flat) 45%, transparent);
-}
-
-.cents-num {
-  opacity: 0.92;
+  border: 1px solid var(--border-strong);
+  background-color: var(--surface-well);
+  color: var(--ink-ivory);
 }
 
 .note-stage {
@@ -354,7 +320,7 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
   font-weight: 600;
 }
 
-/* Precision Cents Meter */
+/* Neutral Cents Position Scale */
 .cents-meter {
   display: flex;
   flex-direction: column;
@@ -369,7 +335,7 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
 }
 
 .center-mark {
-  color: var(--pitch-accurate);
+  color: var(--ink-secondary);
   font-weight: 600;
 }
 
@@ -382,23 +348,12 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
   overflow: hidden;
 }
 
-/* Sweet spot: -12c to +12c -> 24% width centered at 50% */
-.meter-sweetspot {
-  position: absolute;
-  inset-block: 0;
-  left: 38%;
-  width: 24%;
-  background-color: color-mix(in oklab, var(--pitch-accurate) 18%, transparent);
-  border-inline: 1px solid color-mix(in oklab, var(--pitch-accurate) 35%, transparent);
-}
-
 .meter-centerline {
   position: absolute;
   inset-block: 2px;
   left: 50%;
   width: 1px;
-  background-color: var(--pitch-accurate);
-  opacity: 0.7;
+  background-color: var(--border-strong);
 }
 
 .meter-needle {
@@ -409,22 +364,7 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
   margin-left: -3px;
   border-radius: 3px;
   background-color: var(--pitch-accurate);
-  box-shadow: 0 0 10px currentColor;
-}
-
-.needle-in-tune {
-  background-color: var(--pitch-accurate);
-  color: var(--pitch-accurate);
-}
-
-.needle-sharp {
-  background-color: var(--pitch-sharp);
-  color: var(--pitch-sharp);
-}
-
-.needle-flat {
-  background-color: var(--pitch-flat);
-  color: var(--pitch-flat);
+  box-shadow: 0 0 10px var(--pitch-accurate);
 }
 
 /* VU Bar */
@@ -543,6 +483,10 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
   gap: 0.12rem;
 }
 
+.stat-right {
+  text-align: right;
+}
+
 .stat-val {
   font-size: 0.88rem;
   font-weight: 600;
@@ -551,7 +495,7 @@ const litSegments = computed(() => Math.round(props.inputLevel * vuSegments))
 
 @media (prefers-reduced-motion: no-preference) {
   .meter-needle {
-    transition: left 60ms linear, background-color 140ms ease;
+    transition: left 60ms linear;
   }
 
   .note-stage {

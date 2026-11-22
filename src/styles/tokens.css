@@ -1,0 +1,141 @@
+:root {
+  color-scheme: dark;
+
+  /* Core Atelier Studio Palette */
+  --surface-chassis: #11161c;
+  --surface-well: #0b0f14;
+  --surface-panel: #171f28;
+  --surface-raised: #1e2834;
+  --surface-hover: #253140;
+
+  /* Ink & Borders (WCAG AA >= 4.5:1 text, >= 3:1 UI boundaries) */
+  --ink-ivory: #f2ede4;
+  --ink-secondary: #a5b2c2;
+  --ink-muted: #7f8f9f;
+  --border-hairline: #273240;
+  --border-strong: #3c4c60;
+
+  /* Acoustic Instrument Accents */
+  --accent-brass: #e4b653;
+  --accent-brass-soft: color-mix(in oklab, #e4b653 16%, #171f28);
+  --accent-brass-ink: #11161c;
+
+  /* Intonation Semantics (paired with icons/text, never color alone) */
+  --pitch-accurate: #4fd1a5;
+  --pitch-accurate-soft: color-mix(in oklab, #4fd1a5 15%, #0b0f14);
+  --pitch-sharp: #ee7863;
+  --pitch-sharp-soft: color-mix(in oklab, #ee7863 16%, #0b0f14);
+  --pitch-flat: #63b3ed;
+  --pitch-flat-soft: color-mix(in oklab, #63b3ed 16%, #0b0f14);
+
+  /* Typography */
+  --font-display: 'Newsreader', 'Songti SC', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+
+  /* Radii & Spacing */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* Scrollbar tokens (>= 3:1 contrast against track) */
+  --scrollbar-thumb: #4b5d73;
+  --scrollbar-track: #11161c;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--surface-chassis);
+  color: var(--ink-ivory);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:where(button, a, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-brass);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+/* Standard custom scrollbar with safe WebKit fallback */
+.studio-scroll {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+@supports not (scrollbar-color: auto) {
+  .studio-scroll {
+    scrollbar-width: auto;
+  }
+
+  .studio-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .studio-scroll::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+  }
+
+  .studio-scroll::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+}
+
+/* Respect Forced Colors Mode */
+@media (forced-colors: active) {
+  :root {
+    --surface-chassis: Canvas;
+    --surface-well: Canvas;
+    --surface-panel: Canvas;
+    --surface-raised: Canvas;
+    --ink-ivory: CanvasText;
+    --ink-secondary: CanvasText;
+    --ink-muted: GrayText;
+    --border-hairline: ButtonBorder;
+    --border-strong: ButtonBorder;
+    --accent-brass: Highlight;
+    --accent-brass-ink: HighlightText;
+    --pitch-accurate: Highlight;
+    --pitch-sharp: Mark;
+    --pitch-flat: LinkText;
+  }
+}

@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Wrangler & Cloudflare local state
+.wrangler/
+.dev.vars*
+
+# Logs & caches
+*.log
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/

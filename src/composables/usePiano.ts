@@ -111,7 +111,7 @@ export function usePiano(a4Hz: Ref<number>) {
   }
 
   function releaseNote(midi: number) {
-    if (sustainDrone.value && sustainedMidi.value === midi) {
+    if (sustainedMidi.value === midi) {
       return
     }
     // Natural piano damper decay when releasing a sampled key
@@ -121,6 +121,29 @@ export function usePiano(a4Hz: Ref<number>) {
       next.delete(midi)
       activeNotes.value = next
     }
+  }
+
+  function toggleDrone(midi: number) {
+    if (sustainedMidi.value === midi) {
+      synth.noteOff(midi, 0.25)
+      const next = new Set(activeNotes.value)
+      next.delete(midi)
+      activeNotes.value = next
+      sustainedMidi.value = null
+      return
+    }
+    if (sustainedMidi.value !== null) {
+      synth.noteOff(sustainedMidi.value, 0.16)
+      const next = new Set(activeNotes.value)
+      next.delete(sustainedMidi.value)
+      activeNotes.value = next
+    }
+    synth.noteOn(midi, { sustain: true, velocity: 0.82 })
+    const next = new Set(activeNotes.value)
+    next.add(midi)
+    activeNotes.value = next
+    sustainedMidi.value = midi
+    referenceMidi.value = midi
   }
 
   function clearReference() {
@@ -153,6 +176,7 @@ export function usePiano(a4Hz: Ref<number>) {
     sustainedMidi,
     pressNote,
     releaseNote,
+    toggleDrone,
     clearReference,
     shiftOctave,
   }

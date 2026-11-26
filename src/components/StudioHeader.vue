@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
         v-if="mode === 'monitor'"
         role="group"
         aria-label="麦克风与录制控制"
-        class="control-group"
+        class="control-group desktop-only"
       >
         <button
           type="button"
@@ -256,7 +256,7 @@ onBeforeUnmount(() => {
 
         <button
           type="button"
-          class="btn-ghost"
+          class="btn-ghost settings-trigger"
           :aria-expanded="settingsOpen"
           aria-haspopup="dialog"
           title="打开调音、时间轴与音频延迟设置"
@@ -271,7 +271,8 @@ onBeforeUnmount(() => {
               stroke-linecap="round"
             />
           </svg>
-          <span>设置</span>
+          <span class="settings-label">设置</span>
+          <span class="mobile-a4-chip tabular">{{ a4Hz }}Hz</span>
         </button>
       </div>
     </div>
@@ -772,41 +773,50 @@ onBeforeUnmount(() => {
   }
 }
 
+.mobile-a4-chip {
+  display: none;
+  font-size: 0.74rem;
+  color: var(--ink-secondary);
+}
+
 @media (max-width: 900px) {
   .studio-header {
-    padding: max(0.5rem, env(safe-area-inset-top)) 0.75rem 0.55rem;
-    gap: 0.55rem;
+    padding: max(0.38rem, env(safe-area-inset-top)) 0.75rem 0.38rem;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
   }
 
   .header-left {
-    width: 100%;
-    justify-content: space-between;
-    gap: 0.5rem;
+    width: auto;
+    gap: 0.45rem;
   }
 
-  .brand-sub {
+  .brand-sub,
+  .mode-nav {
     display: none;
   }
 
-  .mode-nav {
-    flex: 1 1 auto;
-    justify-content: space-between;
-  }
-
-  .mode-tab {
-    flex: 1 1 0;
-    padding: 0.25rem 0.45rem;
-    font-size: 0.8rem;
-    text-align: center;
-  }
-
   .controls-toolbar {
-    width: 100%;
-    justify-content: space-between;
+    width: auto;
+    justify-content: flex-end;
   }
 
   .desktop-only {
     display: none;
+  }
+
+  .settings-trigger {
+    min-block-size: 2.1rem;
+    padding: 0.22rem 0.62rem;
+    border-radius: var(--radius-pill);
+  }
+
+  .settings-label {
+    display: none;
+  }
+
+  .mobile-a4-chip {
+    display: inline;
   }
 
   .settings-backdrop {

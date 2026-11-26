@@ -12,12 +12,26 @@ import PitchCurveCanvas from './components/PitchCurveCanvas.vue'
 import ConcertPiano from './components/ConcertPiano.vue'
 import PracticePanel from './components/practice/PracticePanel.vue'
 import SongPanel from './components/songs/SongPanel.vue'
+import BottomSheet from './components/ui/BottomSheet.vue'
+import MobileStageHud from './components/mobile/MobileStageHud.vue'
+import MobileBottomDock from './components/mobile/MobileBottomDock.vue'
 
 const settings = useSettings()
 const a4Hz = toRef(settings, 'a4Hz')
 const windowSeconds = toRef(settings, 'windowSeconds')
 const autoFollow = toRef(settings, 'autoFollow')
 const latencyOffsetMs = toRef(settings, 'latencyOffsetMs')
+
+const isMobile = ref(false)
+const mobileSheetOpen = ref(false)
+const mobilePianoOpen = ref(false)
+let mobileMediaQuery: MediaQueryList | null = null
+
+const PRACTICE_PRESETS = [
+  { min: 48, max: 55 }, // C3-G3
+  { min: 57, max: 64 }, // A3-E4
+  { min: 60, max: 67 }, // C4-G4
+] as const
 
 function readModeFromHash(): AppMode {
   const hash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase()
@@ -51,6 +65,7 @@ watch(
   (nextMode, prevMode) => {
     mic.recordHistory.value = nextMode === 'monitor'
     hoveredPoint.value = null
+    mobileSheetOpen.value = false
 
     if (prevMode === 'practice' && nextMode !== 'practice') {
       practice.stop()
@@ -67,6 +82,32 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => practice.status.value,
+  (next, prev) => {
+    if (isMobile.value && next === 'finished' && prev !== 'finished') {
+      mobileSheetOpen.value = true
+    }
+  },
+)
+
+watch(
+  () => songPractice.status.value,
+  (next, prev) => {
+    if (isMobile.value && next === 'finished' && prev !== 'finished') {
+      mobileSheetOpen.value = true
+    }
+  },
+)
+
+function syncIsMobile() {
+  isMobile.value = mobileMediaQuery ? mobileMediaQuery.matches : window.innerWidth <= 900
+  if (!isMobile.value) {
+    mobileSheetOpen.value = false
+    mobilePianoOpen.value = false
+  }
+}
+
 function handleHashChange() {
   const next = readModeFromHash()
   if (next !== mode.value) {
@@ -75,10 +116,14 @@ function handleHashChange() {
 }
 
 onMounted(() => {
+  mobileMediaQuery = window.matchMedia('(max-width: 900px)')
+  syncIsMobile()
+  mobileMediaQuery.addEventListener('change', syncIsMobile)
   window.addEventListener('hashchange', handleHashChange)
 })
 
 onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener('change', syncIsMobile)
   window.removeEventListener('hashchange', handleHashChange)
 })
 
@@ -196,10 +241,62 @@ function handleAuditionMidi(midi: number) {
     }, 480)
   }
 }
+
+function handleCyclePreset(delta: number) {
+  const currentIdx = PRACTICE_PRESETS.findIndex(
+    (p) => p.min === settings.practiceRangeMin && p.max === settings.practiceRangeMax,
+  )
+  const baseIdx = currentIdx === -1 ? 1 : currentIdx
+  const nextIdx = (baseIdx + delta + PRACTICE_PRESETS.length) % PRACTICE_PRESETS.length
+  const preset = PRACTICE_PRESETS[nextIdx]!
+  settings.practiceRangeMin = preset.min
+  settings.practiceRangeMax = preset.max
+}
+
+function handleCycleSong(delta: number) {
+  const list = songPractice.songs.value
+  if (list.length <= 1) return
+  const idx = list.findIndex((s) => s.id === songPractice.selectedSong.value.id)
+  const nextIdx = (Math.max(0, idx) + delta + list.length) % list.length
+  songPractice.selectSong(list[nextIdx]!.id)
+}
+
+function handleStartPractice(customMidis?: number[]) {
+  mobileSheetOpen.value = false
+  mobilePianoOpen.value = false
+  void practice.start(customMidis)
+}
+
+function handlePreviewSong() {
+  mobileSheetOpen.value = false
+  mobilePianoOpen.value = false
+  void songPractice.previewMelody()
+}
+
+function handleStartSong() {
+  mobileSheetOpen.value = false
+  mobilePianoOpen.value = false
+  void songPractice.startSingAlong()
+}
+
+function handleToggleMobilePiano() {
+  mobileSheetOpen.value = false
+  mobilePianoOpen.value = !mobilePianoOpen.value
+}
+
+const mobileSheetTitle = computed(() => {
+  if (mode.value === 'practice') {
+    return practice.status.value === 'finished' ? '练习成绩' : '音准练习设置'
+  }
+  if (mode.value === 'songs') {
+    return songPractice.status.value === 'finished' ? '跟唱成绩' : '曲库与跟唱设置'
+  }
+  return ''
+})
 </script>
 
 <template>
-  <div class="studio-shell">
+  <div class="studio-shell" :class="{ 'is-mobile': isMobile }">
     <StudioHeader
       v-model:mode="mode"
       :is-listening="mic.isListening.value"
@@ -216,25 +313,211 @@ function handleAuditionMidi(midi: number) {
 
     <p role="status" class="visually-hidden">{{ statusAnnouncement }}</p>
 
-    <main class="studio-workspace">
-      <LivePitchMonitor
-        v-if="mode === 'monitor'"
-        class="workspace-monitor"
-        :is-listening="mic.isListening.value"
-        :is-demo="mic.isDemo.value"
-        :current-pitch="mic.currentPitch.value"
-        :last-stable-pitch="mic.lastStablePitch.value"
-        :hovered-point="hoveredPoint"
-        :reference-midi="piano.referenceMidi.value"
-        :input-level="mic.inputLevel.value"
-        :a4-hz="a4Hz"
-        :voiced-range="mic.voicedRange.value"
-        @clear-reference="piano.clearReference()"
-      />
+    <MobileStageHud
+      v-if="isMobile"
+      :mode="mode"
+      :is-listening="mic.isListening.value"
+      :current-pitch="mic.currentPitch.value"
+      :last-stable-pitch="mic.lastStablePitch.value"
+      :hovered-point="hoveredPoint"
+      :input-level="mic.inputLevel.value"
+      :practice-status="practice.status.value"
+      :practice-range-min="settings.practiceRangeMin"
+      :practice-range-max="settings.practiceRangeMax"
+      :practice-pattern="settings.practicePattern"
+      :practice-slot="practice.currentSlot.value"
+      :practice-phase="practice.activePhase.value"
+      :practice-index="practice.currentIndex.value"
+      :practice-total="practice.slots.value.length"
+      :practice-combo="practice.combo.value"
+      :practice-score="practice.summary.value.score"
+      :practice-live-dir="practice.liveDirection.value"
+      :practice-live-cents="practice.liveCents.value"
+      :practice-preview-count="practice.previewSequence.value.length"
+      :song-status="songPractice.status.value"
+      :song-title="songPractice.selectedSong.value.title"
+      :song-transpose="songPractice.transposeSemitones.value"
+      :song-tempo="songPractice.tempoRate.value"
+      :song-note="songPractice.currentNote.value"
+      :song-is-preview="songPractice.isPreviewOnly.value"
+      :song-combo="songPractice.combo.value"
+      :song-score="songPractice.summary.value.score"
+      :song-live-dir="songPractice.liveDirection.value"
+      :song-live-cents="songPractice.liveCents.value"
+      :songs="songPractice.songs.value"
+      :selected-song-id="songPractice.selectedSong.value.id"
+      @open-sheet="mobileSheetOpen = true"
+      @cycle-preset="handleCyclePreset"
+      @cycle-song="handleCycleSong"
+    />
 
+    <main class="studio-workspace">
+      <template v-if="!isMobile">
+        <LivePitchMonitor
+          v-if="mode === 'monitor'"
+          class="workspace-monitor"
+          :is-listening="mic.isListening.value"
+          :is-demo="mic.isDemo.value"
+          :current-pitch="mic.currentPitch.value"
+          :last-stable-pitch="mic.lastStablePitch.value"
+          :hovered-point="hoveredPoint"
+          :reference-midi="piano.referenceMidi.value"
+          :input-level="mic.inputLevel.value"
+          :a4-hz="a4Hz"
+          :voiced-range="mic.voicedRange.value"
+          @clear-reference="piano.clearReference()"
+        />
+
+        <PracticePanel
+          v-else-if="mode === 'practice'"
+          class="workspace-sidebar studio-scroll"
+          :status="practice.status.value"
+          :countdown-value="practice.countdownValue.value"
+          :current-index="practice.currentIndex.value"
+          :total-count="practice.slots.value.length"
+          :current-slot="practice.currentSlot.value"
+          :active-phase="practice.activePhase.value"
+          :combo="practice.combo.value"
+          :max-combo="practice.maxCombo.value"
+          :results="practice.results.value"
+          :summary="practice.summary.value"
+          :preview-sequence="practice.previewSequence.value"
+          :history="practice.history.value"
+          :status-message="practice.statusMessage.value"
+          :live-direction="practice.liveDirection.value"
+          :live-cents="practice.liveCents.value"
+          @start="handleStartPractice($event)"
+          @pause="practice.pause()"
+          @resume="practice.resume()"
+          @replay-current="practice.replayCurrentNote()"
+          @stop="practice.stop()"
+          @audition-midi="practice.auditionNote($event)"
+          @clear-history="practice.clearHistory()"
+        />
+
+        <SongPanel
+          v-else
+          class="workspace-sidebar studio-scroll"
+          :songs="songPractice.songs.value"
+          :selected-song="songPractice.selectedSong.value"
+          :scaled-notes="songPractice.scaledNotes.value"
+          :current-note="songPractice.currentNote.value"
+          v-model:transpose-semitones="songPractice.transposeSemitones.value"
+          v-model:tempo-rate="songPractice.tempoRate.value"
+          v-model:mute-guide-melody="songPractice.muteGuideMelody.value"
+          v-model:play-backing-audio="songPractice.playBackingAudio.value"
+          v-model:loop-enabled="songPractice.loopEnabled.value"
+          v-model:loop-start="songPractice.loopStart.value"
+          v-model:loop-end="songPractice.loopEnd.value"
+          :is-importing="songPractice.isImporting.value"
+          :import-progress="songPractice.importProgress.value"
+          :import-error="songPractice.importError.value"
+          :status="songPractice.status.value"
+          :is-preview-only="songPractice.isPreviewOnly.value"
+          :countdown-value="songPractice.countdownValue.value"
+          :combo="songPractice.combo.value"
+          :results="songPractice.results.value"
+          :summary="songPractice.summary.value"
+          :status-message="songPractice.statusMessage.value"
+          :live-direction="songPractice.liveDirection.value"
+          :live-cents="songPractice.liveCents.value"
+          @select-song="songPractice.selectSong($event)"
+          @select-midi-track="songPractice.selectMidiTrack($event)"
+          @import-file="songPractice.importFile($event)"
+          @cancel-import="songPractice.cancelImport()"
+          @remove-song="songPractice.removeSong($event)"
+          @preview-melody="handlePreviewSong"
+          @start-sing-along="handleStartSong"
+          @pause="songPractice.pause()"
+          @resume="songPractice.resume()"
+          @stop="songPractice.stop()"
+        />
+      </template>
+
+      <PitchCurveCanvas
+        class="workspace-canvas"
+        :samples="canvasSamples"
+        :sample-version="canvasSampleVersion"
+        :is-listening="mic.isListening.value"
+        :is-demo="mode === 'monitor' && mic.isDemo.value"
+        :current-time="canvasCurrentTime"
+        :window-seconds="windowSeconds"
+        :a4-hz="a4Hz"
+        v-model:auto-follow="autoFollow"
+        :reference-midi="activeReferenceMidi"
+        :error-message="mic.errorMessage.value"
+        :targets="canvasTargets"
+        :playhead-time="canvasPlayheadTime"
+        :guided-mode="mode !== 'monitor'"
+        :countdown-value="canvasCountdownValue"
+        :grade-popup="canvasGradePopup"
+        @hover="hoveredPoint = $event"
+        @start-mic="handleStartMic"
+        @load-demo="handleLoadDemo"
+        @audition-midi="handleAuditionMidi"
+      />
+    </main>
+
+    <!-- Desktop docked 88-key Concert Piano -->
+    <ConcertPiano
+      v-if="!isMobile"
+      :keyboard-octave="piano.keyboardOctave.value"
+      v-model:timbre="piano.timbre.value"
+      v-model:volume="piano.volume.value"
+      v-model:sustain-drone="piano.sustainDrone.value"
+      v-model:show-key-shortcuts="piano.showKeyShortcuts.value"
+      :active-notes="piano.activeNotes.value"
+      :sustained-midi="piano.sustainedMidi.value"
+      :reference-midi="activeReferenceMidi"
+      :vocal-midi="pianoVocalMidi"
+      :a4-hz="a4Hz"
+      @press-note="piano.pressNote"
+      @release-note="piano.releaseNote"
+      @toggle-drone="piano.toggleDrone"
+      @clear-reference="piano.clearReference()"
+      @shift-octave="piano.shiftOctave"
+    />
+
+    <!-- Mobile thumb-zone dock & bottom tab bar -->
+    <MobileBottomDock
+      v-if="isMobile"
+      v-model:mode="mode"
+      :is-listening="mic.isListening.value"
+      :is-demo="mic.isDemo.value"
+      :has-samples="hasSamples"
+      :piano-open="mobilePianoOpen"
+      :has-sustained-drone="piano.sustainedMidi.value !== null"
+      :practice-status="practice.status.value"
+      :practice-missed-count="practice.summary.value.missedMidis.length"
+      :song-status="songPractice.status.value"
+      @toggle-listen="handleToggleListen"
+      @clear-monitor="handleClear"
+      @load-demo="handleLoadDemo"
+      @toggle-piano="handleToggleMobilePiano"
+      @open-sheet="mobileSheetOpen = true"
+      @start-practice="handleStartPractice()"
+      @retry-missed="handleStartPractice(practice.summary.value.missedMidis)"
+      @pause-practice="practice.pause()"
+      @resume-practice="practice.resume()"
+      @replay-practice="practice.replayCurrentNote()"
+      @stop-practice="practice.stop()"
+      @preview-song="handlePreviewSong"
+      @start-song="handleStartSong"
+      @pause-song="songPractice.pause()"
+      @resume-song="songPractice.resume()"
+      @stop-song="songPractice.stop()"
+    />
+
+    <!-- Mobile swipeable Config / Song Library / Results Bottom Sheet -->
+    <BottomSheet
+      v-if="isMobile"
+      :open="mobileSheetOpen"
+      :title="mobileSheetTitle"
+      @close="mobileSheetOpen = false"
+    >
       <PracticePanel
-        v-else-if="mode === 'practice'"
-        class="workspace-sidebar studio-scroll"
+        v-if="mode === 'practice'"
+        class="sheet-embedded-panel"
         :status="practice.status.value"
         :countdown-value="practice.countdownValue.value"
         :current-index="practice.currentIndex.value"
@@ -250,7 +533,7 @@ function handleAuditionMidi(midi: number) {
         :status-message="practice.statusMessage.value"
         :live-direction="practice.liveDirection.value"
         :live-cents="practice.liveCents.value"
-        @start="practice.start($event)"
+        @start="handleStartPractice($event)"
         @pause="practice.pause()"
         @resume="practice.resume()"
         @replay-current="practice.replayCurrentNote()"
@@ -258,10 +541,9 @@ function handleAuditionMidi(midi: number) {
         @audition-midi="practice.auditionNote($event)"
         @clear-history="practice.clearHistory()"
       />
-
       <SongPanel
-        v-else
-        class="workspace-sidebar studio-scroll"
+        v-else-if="mode === 'songs'"
+        class="sheet-embedded-panel"
         :songs="songPractice.songs.value"
         :selected-song="songPractice.selectedSong.value"
         :scaled-notes="songPractice.scaledNotes.value"
@@ -290,52 +572,42 @@ function handleAuditionMidi(midi: number) {
         @import-file="songPractice.importFile($event)"
         @cancel-import="songPractice.cancelImport()"
         @remove-song="songPractice.removeSong($event)"
-        @preview-melody="songPractice.previewMelody()"
-        @start-sing-along="songPractice.startSingAlong()"
+        @preview-melody="handlePreviewSong"
+        @start-sing-along="handleStartSong"
         @pause="songPractice.pause()"
         @resume="songPractice.resume()"
         @stop="songPractice.stop()"
       />
+    </BottomSheet>
 
-      <PitchCurveCanvas
-        class="workspace-canvas"
-        :samples="canvasSamples"
-        :sample-version="canvasSampleVersion"
-        :is-listening="mic.isListening.value"
-        :is-demo="mode === 'monitor' && mic.isDemo.value"
-        :current-time="canvasCurrentTime"
-        :window-seconds="windowSeconds"
-        :a4-hz="a4Hz"
-        v-model:auto-follow="autoFollow"
+    <!-- Mobile swipeable Piano Bottom Sheet -->
+    <BottomSheet
+      v-if="isMobile"
+      :open="mobilePianoOpen"
+      title="参考钢琴（滑奏 · 长按锁定持续音）"
+      max-height="46dvh"
+      light-backdrop
+      @close="mobilePianoOpen = false"
+    >
+      <ConcertPiano
+        mobile-drawer
+        :keyboard-octave="piano.keyboardOctave.value"
+        v-model:timbre="piano.timbre.value"
+        v-model:volume="piano.volume.value"
+        v-model:sustain-drone="piano.sustainDrone.value"
+        v-model:show-key-shortcuts="piano.showKeyShortcuts.value"
+        :active-notes="piano.activeNotes.value"
+        :sustained-midi="piano.sustainedMidi.value"
         :reference-midi="activeReferenceMidi"
-        :error-message="mic.errorMessage.value"
-        :targets="canvasTargets"
-        :playhead-time="canvasPlayheadTime"
-        :guided-mode="mode !== 'monitor'"
-        :countdown-value="canvasCountdownValue"
-        :grade-popup="canvasGradePopup"
-        @hover="hoveredPoint = $event"
-        @start-mic="handleStartMic"
-        @load-demo="handleLoadDemo"
-        @audition-midi="handleAuditionMidi"
+        :vocal-midi="pianoVocalMidi"
+        :a4-hz="a4Hz"
+        @press-note="piano.pressNote"
+        @release-note="piano.releaseNote"
+        @toggle-drone="piano.toggleDrone"
+        @clear-reference="piano.clearReference()"
+        @shift-octave="piano.shiftOctave"
       />
-    </main>
-
-    <ConcertPiano
-      :keyboard-octave="piano.keyboardOctave.value"
-      v-model:timbre="piano.timbre.value"
-      v-model:volume="piano.volume.value"
-      v-model:sustain-drone="piano.sustainDrone.value"
-      v-model:show-key-shortcuts="piano.showKeyShortcuts.value"
-      :active-notes="piano.activeNotes.value"
-      :sustained-midi="piano.sustainedMidi.value"
-      :reference-midi="activeReferenceMidi"
-      :vocal-midi="pianoVocalMidi"
-      :a4-hz="a4Hz"
-      @press-note="piano.pressNote"
-      @release-note="piano.releaseNote"
-      @shift-octave="piano.shiftOctave"
-    />
+    </BottomSheet>
   </div>
 </template>
 
@@ -372,25 +644,28 @@ function handleAuditionMidi(midi: number) {
   min-block-size: 0;
 }
 
+.sheet-embedded-panel {
+  border-inline-end: none !important;
+  overflow-y: visible !important;
+}
+
 @media (max-width: 900px) {
   .studio-shell {
-    block-size: auto;
-    overflow: visible;
+    block-size: 100dvh;
+    max-block-size: 100dvh;
+    overflow: hidden;
   }
 
   .studio-workspace {
     flex-direction: column;
-  }
-
-  .workspace-monitor,
-  .workspace-sidebar {
-    flex: 0 0 auto;
-    overflow-y: visible;
+    flex: 1 1 auto;
+    min-block-size: 0;
   }
 
   .workspace-canvas {
-    min-block-size: 320px;
-    block-size: 44dvh;
+    flex: 1 1 auto;
+    min-block-size: 0;
+    block-size: auto;
   }
 }
 </style>

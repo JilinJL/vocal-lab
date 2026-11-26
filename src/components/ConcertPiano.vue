@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from
 import { isBlackKey, midiToFrequency, midiToNoteParts } from '../audio/pitchMath'
 import type { PianoTimbre } from '../audio/pianoSynth'
 import { KEYBOARD_NOTE_OFFSETS } from '../composables/usePiano'
+import { triggerHaptic } from '../utils/haptics'
 
 interface Props {
   keyboardOctave: number
@@ -15,6 +16,7 @@ interface Props {
   referenceMidi: number | null
   vocalMidi: number | null // Live sung or curve-hovered pitch
   a4Hz: number
+  mobileDrawer?: boolean
 }
 
 const props = defineProps<Props>()
@@ -22,6 +24,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   pressNote: [midi: number]
   releaseNote: [midi: number]
+  toggleDrone: [midi: number]
+  clearReference: []
   shiftOctave: [delta: number]
   'update:timbre': [value: PianoTimbre]
   'update:volume': [value: number]
@@ -132,6 +136,21 @@ const isPointerGlissando = ref(false)
 const pointerHeldMidi = ref<number | null>(null)
 const keyboardHeldMidis = new Set<number>()
 const isCollapsed = ref(false)
+const activeOctaveJump = ref(4)
+const droneHint = ref<string | null>(null)
+let droneHintTimer: number | null = null
+let keyLongPressTimer: number | null = null
+let keyLongPressMidi: number | null = null
+let keyDownX = 0
+let keyDownY = 0
+
+const quickOctaves = [
+  { oct: 2, midi: 42, label: 'C2' },
+  { oct: 3, midi: 54, label: 'C3' },
+  { oct: 4, midi: 66, label: 'C4' },
+  { oct: 5, midi: 78, label: 'C5' },
+  { oct: 6, midi: 90, label: 'C6' },
+] as const
 
 function centerScrollOnMidi(midi: number, smooth = false) {
   const scroller = scrollEl.value
@@ -155,15 +174,76 @@ watch(
   },
 )
 
+function jumpToOctave(oct: number, midi: number) {
+  activeOctaveJump.value = oct
+  centerScrollOnMidi(midi, true)
+  triggerHaptic(8)
+}
+
+function cycleTimbre() {
+  const idx = timbreOptions.findIndex((t) => t.id === props.timbre)
+  const next = timbreOptions[(idx + 1) % timbreOptions.length]!
+  emit('update:timbre', next.id)
+  triggerHaptic(8)
+}
+
+function clearKeyLongPress() {
+  if (keyLongPressTimer !== null) {
+    window.clearTimeout(keyLongPressTimer)
+    keyLongPressTimer = null
+  }
+}
+
+function showDroneHint(msg: string) {
+  droneHint.value = msg
+  if (droneHintTimer !== null) {
+    window.clearTimeout(droneHintTimer)
+  }
+  droneHintTimer = window.setTimeout(() => {
+    droneHint.value = null
+    droneHintTimer = null
+  }, 1500)
+}
+
 function onKeyPointerDown(midi: number, e: PointerEvent) {
   e.preventDefault()
   isPointerGlissando.value = true
   pointerHeldMidi.value = midi
+  keyLongPressMidi = null
+  keyDownX = e.clientX
+  keyDownY = e.clientY
+  clearKeyLongPress()
+
+  // If tapping the currently sustained drone key directly, release it
+  if (props.sustainedMidi === midi) {
+    emit('toggleDrone', midi)
+    triggerHaptic(10)
+    showDroneHint('已关闭持续音')
+    isPointerGlissando.value = false
+    pointerHeldMidi.value = null
+    return
+  }
+
+  triggerHaptic(8)
   emit('pressNote', midi)
+
+  // Long-press any key (>460ms) to lock a sustained reference drone
+  if (!props.sustainDrone) {
+    keyLongPressTimer = window.setTimeout(() => {
+      keyLongPressTimer = null
+      if (pointerHeldMidi.value === midi) {
+        keyLongPressMidi = midi
+        emit('toggleDrone', midi)
+        triggerHaptic([14, 30, 14])
+        showDroneHint(`持续音 ${midiToNoteParts(midi).displayFullName}（再按停止）`)
+      }
+    }, 460)
+  }
 }
 
 function onKeyPointerEnter(midi: number, e: PointerEvent) {
   if (!isPointerGlissando.value || e.buttons !== 1) return
+  clearKeyLongPress()
   if (pointerHeldMidi.value !== null && pointerHeldMidi.value !== midi) {
     emit('releaseNote', pointerHeldMidi.value)
   }
@@ -171,11 +251,34 @@ function onKeyPointerEnter(midi: number, e: PointerEvent) {
   emit('pressNote', midi)
 }
 
-function releasePointerNote() {
+function onBedPointerMove(e: PointerEvent) {
+  if (!isPointerGlissando.value) return
+  if (Math.hypot(e.clientX - keyDownX, e.clientY - keyDownY) > 10) {
+    clearKeyLongPress()
+  }
+  if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+  const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+  const keyEl = el?.closest?.('[data-midi]') as HTMLElement | null
+  if (!keyEl) return
+  const midi = Number(keyEl.dataset.midi)
+  if (!Number.isFinite(midi) || midi === pointerHeldMidi.value) return
   if (pointerHeldMidi.value !== null) {
     emit('releaseNote', pointerHeldMidi.value)
+  }
+  pointerHeldMidi.value = midi
+  triggerHaptic(6)
+  emit('pressNote', midi)
+}
+
+function releasePointerNote() {
+  clearKeyLongPress()
+  if (pointerHeldMidi.value !== null) {
+    if (keyLongPressMidi !== pointerHeldMidi.value) {
+      emit('releaseNote', pointerHeldMidi.value)
+    }
     pointerHeldMidi.value = null
   }
+  keyLongPressMidi = null
   isPointerGlissando.value = false
 }
 
@@ -239,7 +342,7 @@ const timbreOptions: ReadonlyArray<{ id: PianoTimbre; label: string }> = [
 ]
 
 onMounted(() => {
-  if (window.matchMedia('(max-width: 768px)').matches) {
+  if (!props.mobileDrawer && window.matchMedia('(max-width: 768px)').matches) {
     isCollapsed.value = true
   } else {
     // Center the 88-key bed around middle C (C4–E4) on smaller screens
@@ -270,9 +373,41 @@ watch(isCollapsed, (collapsed) => {
 </script>
 
 <template>
-  <section class="piano-deck" aria-label="88 键标准音参考钢琴">
+  <section
+    class="piano-deck"
+    :class="{ 'is-mobile-drawer': mobileDrawer }"
+    aria-label="88 键标准音参考钢琴"
+  >
     <!-- Top Hardware Console Rail -->
-    <div class="piano-rail">
+    <div v-if="mobileDrawer" class="mobile-piano-rail">
+      <div class="octave-jump-strip" role="group" aria-label="快速跳转八度">
+        <button
+          v-for="item in quickOctaves"
+          :key="item.oct"
+          type="button"
+          class="oct-chip tabular"
+          :class="{ 'is-active': activeOctaveJump === item.oct }"
+          @click="jumpToOctave(item.oct, item.midi)"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+      <div class="mobile-rail-actions">
+        <button
+          v-if="sustainedMidi !== null"
+          type="button"
+          class="drone-stop-chip"
+          @click="emit('clearReference')"
+        >
+          停 {{ midiToNoteParts(sustainedMidi).displayFullName }}
+        </button>
+        <button type="button" class="timbre-cycle-chip" @click="cycleTimbre">
+          {{ timbreOptions.find((t) => t.id === timbre)?.label }}
+        </button>
+      </div>
+    </div>
+
+    <div v-else class="piano-rail">
       <div class="rail-left">
         <button
           type="button"
@@ -359,6 +494,10 @@ watch(isCollapsed, (collapsed) => {
       </div>
     </div>
 
+    <div v-if="droneHint" class="drone-toast" role="status" aria-live="polite">
+      {{ droneHint }}
+    </div>
+
     <!-- Tactile 88-Key Concert Piano Keyboard Bed -->
     <div v-show="!isCollapsed" ref="scrollRef" class="keyboard-scroll studio-scroll">
       <div
@@ -366,6 +505,7 @@ watch(isCollapsed, (collapsed) => {
         :style="{ '--white-count': keys.whiteCount }"
         role="group"
         aria-label="88 键标准音钢琴键盘，点击琴键或按电脑键盘 A 至 ; 键弹奏标准音"
+        @pointermove="onBedPointerMove"
       >
         <!-- White keys layer (52 white keys) -->
         <button
@@ -373,6 +513,7 @@ watch(isCollapsed, (collapsed) => {
           :key="k.midi"
           type="button"
           class="key-white"
+          :data-midi="k.midi"
           :class="{
             'is-active': activeNotes.has(k.midi),
             'is-sustained': sustainedMidi === k.midi,
@@ -392,9 +533,10 @@ watch(isCollapsed, (collapsed) => {
         >
           <span v-if="vocalNearestMidi === k.midi" class="vocal-beacon" aria-hidden="true"></span>
           <span class="white-labels" aria-hidden="true">
-            <span v-if="showKeyShortcuts && k.shortcut" class="keycap">{{ k.shortcut }}</span>
+            <span v-if="!mobileDrawer && showKeyShortcuts && k.shortcut" class="keycap">{{ k.shortcut }}</span>
             <span
               v-if="
+                mobileDrawer ||
                 k.isC ||
                 k.isFirst ||
                 vocalNearestMidi === k.midi ||
@@ -403,7 +545,7 @@ watch(isCollapsed, (collapsed) => {
               "
               class="note-tag tabular"
             >
-              {{ k.displayFullName }}
+              {{ mobileDrawer && !k.isC ? k.noteName : k.displayFullName }}
             </span>
           </span>
         </button>
@@ -414,6 +556,7 @@ watch(isCollapsed, (collapsed) => {
           :key="k.midi"
           type="button"
           class="key-black"
+          :data-midi="k.midi"
           :class="{
             'is-active': activeNotes.has(k.midi),
             'is-sustained': sustainedMidi === k.midi,
@@ -437,7 +580,7 @@ watch(isCollapsed, (collapsed) => {
             class="vocal-beacon vocal-beacon-black"
             aria-hidden="true"
           ></span>
-          <span v-if="showKeyShortcuts && k.shortcut" class="keycap-black" aria-hidden="true">
+          <span v-if="!mobileDrawer && showKeyShortcuts && k.shortcut" class="keycap-black" aria-hidden="true">
             {{ k.shortcut }}
           </span>
         </button>
@@ -448,12 +591,96 @@ watch(isCollapsed, (collapsed) => {
 
 <style scoped>
 .piano-deck {
+  position: relative;
   display: flex;
   flex-direction: column;
   background-color: var(--surface-panel);
   border-top: 1px solid var(--border-strong);
   user-select: none;
   flex-shrink: 0;
+}
+
+.piano-deck.is-mobile-drawer {
+  border-top: none;
+}
+
+.mobile-piano-rail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background-color: var(--surface-chassis);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.octave-jump-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background-color: var(--surface-well);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+
+.oct-chip {
+  min-inline-size: 2.15rem;
+  min-block-size: 1.9rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.oct-chip.is-active {
+  background-color: var(--surface-raised);
+  border-color: var(--border-strong);
+  color: var(--ink-ivory);
+}
+
+.mobile-rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.timbre-cycle-chip,
+.drone-stop-chip {
+  min-block-size: 2rem;
+  padding: 0.18rem 0.58rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background-color: var(--surface-raised);
+  color: var(--ink-ivory);
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.drone-stop-chip {
+  border-color: var(--accent-brass);
+  background-color: var(--accent-brass-soft);
+  color: var(--accent-brass);
+}
+
+.drone-toast {
+  position: absolute;
+  left: 50%;
+  top: 3.1rem;
+  transform: translateX(-50%);
+  z-index: 12;
+  padding: 0.24rem 0.68rem;
+  border-radius: var(--radius-pill);
+  background-color: rgba(15, 20, 26, 0.92);
+  border: 1px solid var(--accent-brass);
+  color: var(--accent-brass);
+  font-size: 0.74rem;
+  font-weight: 600;
+  pointer-events: none;
 }
 
 .piano-rail {
@@ -825,8 +1052,8 @@ watch(isCollapsed, (collapsed) => {
   }
 
   .keyboard-bed {
-    min-inline-size: 1924px;
-    block-size: 126px;
+    min-inline-size: 2184px;
+    block-size: 150px;
   }
 
   .vol-slider {

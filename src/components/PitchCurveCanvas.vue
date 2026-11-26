@@ -12,6 +12,7 @@ import {
 } from '../audio/pitchMath'
 import { GRADE_LABELS } from '../practice/grading'
 import type { GradeFeedbackPopup, PracticeGrade, TargetBar } from '../practice/types'
+import { triggerHaptic } from '../utils/haptics'
 
 export interface HoverInspection {
   pitch: PitchInfo
@@ -57,14 +58,19 @@ const TOP_PAD = 16
 const BOTTOM_PAD = 28
 const RIGHT_PAD = 18
 
-// Viewport pitch range in MIDI units (vertical span ~26 semitones = 2 octaves + 2)
-const VISIBLE_SEMITONES = 26
+// Viewport pitch range in MIDI units (pinch-zoomable 12..36 semitones)
+const DEFAULT_VISIBLE_SEMITONES = 24
+const MIN_VISIBLE_SEMITONES = 12
+const MAX_VISIBLE_SEMITONES = 36
 const MIN_MIDI_BOUND = 34 // ~A#1
 const MAX_MIDI_BOUND = 90 // ~F#6
 
+const visibleSemitones = ref(DEFAULT_VISIBLE_SEMITONES)
 const centerMidi = ref(62) // D4 center -> ~C3 to E5 initially
 const targetCenterMidi = ref(62)
 const timeOffset = ref(0) // Seconds panned back from live edge (0 = live)
+const gestureToast = ref<string | null>(null)
+let gestureToastTimer: number | null = null
 
 // Pointer & hover state
 const hoveredInspection = ref<HoverInspection | null>(null)
@@ -75,6 +81,17 @@ let dragStartX = 0
 let dragStartY = 0
 let dragStartTimeOffset = 0
 let dragStartCenterMidi = 62
+let longPressTimer: number | null = null
+let longPressTriggered = false
+let lastTapTime = 0
+let lastTapX = 0
+let lastTapY = 0
+
+// Multi-touch pinch state
+const activePointers = new Map<number, { x: number; y: number }>()
+let pinchStartDist = 0
+let pinchStartSpan = DEFAULT_VISIBLE_SEMITONES
+let isPinching = false
 
 let canvasWidth = 800
 let canvasHeight = 420
@@ -108,7 +125,7 @@ function getTimeBounds(): { startTime: number; endTime: number } {
 }
 
 function getMidiBounds(): { minMidi: number; maxMidi: number } {
-  const half = VISIBLE_SEMITONES / 2
+  const half = visibleSemitones.value / 2
   return {
     minMidi: centerMidi.value - half,
     maxMidi: centerMidi.value + half,
@@ -185,8 +202,34 @@ watch(
 )
 
 function clampCenterMidi(val: number): number {
-  const half = VISIBLE_SEMITONES / 2
+  const half = visibleSemitones.value / 2
   return Math.max(MIN_MIDI_BOUND + half, Math.min(MAX_MIDI_BOUND - half, val))
+}
+
+function showGestureToast(msg: string) {
+  gestureToast.value = msg
+  if (gestureToastTimer !== null) {
+    window.clearTimeout(gestureToastTimer)
+  }
+  gestureToastTimer = window.setTimeout(() => {
+    gestureToast.value = null
+    gestureToastTimer = null
+  }, 1300)
+}
+
+function clearLongPressTimer() {
+  if (longPressTimer !== null) {
+    window.clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+function getPinchDistance(): number {
+  const pts = Array.from(activePointers.values())
+  if (pts.length < 2) return 0
+  const a = pts[0]!
+  const b = pts[1]!
+  return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
 function clampTimeOffset(val: number): number {
@@ -219,7 +262,7 @@ watch(
     if (props.autoFollow && props.isListening && props.samples.length > 0) {
       const latest = props.samples[props.samples.length - 1]!
       if (latest.midi !== null) {
-        const margin = VISIBLE_SEMITONES * 0.28
+        const margin = visibleSemitones.value * 0.28
         if (Math.abs(latest.midi - targetCenterMidi.value) > margin) {
           targetCenterMidi.value = clampCenterMidi(latest.midi)
         }
@@ -356,6 +399,21 @@ function handlePointerDown(e: PointerEvent) {
   const x = e.clientX - rect.left
   const y = e.clientY - rect.top
 
+  activePointers.set(e.pointerId, { x, y })
+  clearLongPressTimer()
+  longPressTriggered = false
+
+  // Two-finger pinch-to-zoom vertical pitch range
+  if (activePointers.size >= 2) {
+    isPinching = true
+    isDraggingPitch.value = false
+    isDraggingTime.value = false
+    pinchStartDist = Math.max(24, getPinchDistance())
+    pinchStartSpan = visibleSemitones.value
+    canvas.setPointerCapture(e.pointerId)
+    return
+  }
+
   if (x < AXIS_WIDTH) {
     // Clicking or dragging on the left piano-roll axis: audition note on click, or drag vertical range
     isDraggingPitch.value = true
@@ -365,10 +423,36 @@ function handlePointerDown(e: PointerEvent) {
     return
   }
 
+  dragStartX = x
+  dragStartY = y
+  dragStartTimeOffset = timeOffset.value
+
+  // Long-press on plot area inspects & auditions the pitch at that point
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    longPressTimer = window.setTimeout(() => {
+      longPressTimer = null
+      if (isPinching) return
+      longPressTriggered = true
+      isDraggingTime.value = false
+      updateHoverFromPointer(x, y)
+      if (hoveredInspection.value) {
+        const midi = Math.round(hoveredInspection.value.pitch.midi)
+        emit('auditionMidi', midi)
+        triggerHaptic(16)
+        showGestureToast(`试听 ${hoveredInspection.value.pitch.fullName}`)
+      } else {
+        const { minMidi, maxMidi } = getMidiBounds()
+        const midi = Math.round(yToMidi(y, minMidi, maxMidi))
+        emit('auditionMidi', midi)
+        triggerHaptic(14)
+        showGestureToast(`参考音 ${midiToNoteParts(midi).displayFullName}`)
+      }
+      scheduleDraw()
+    }, 380)
+  }
+
   if (props.samples.length > 0) {
     isDraggingTime.value = true
-    dragStartX = x
-    dragStartTimeOffset = timeOffset.value
     canvas.setPointerCapture(e.pointerId)
   }
 }
@@ -381,10 +465,32 @@ function handlePointerMove(e: PointerEvent) {
   const y = e.clientY - rect.top
   pointerPos.value = { x, y }
 
+  if (activePointers.has(e.pointerId)) {
+    activePointers.set(e.pointerId, { x, y })
+  }
+
+  if (isPinching && activePointers.size >= 2) {
+    const dist = Math.max(24, getPinchDistance())
+    const ratio = pinchStartDist / dist
+    const nextSpan = Math.max(
+      MIN_VISIBLE_SEMITONES,
+      Math.min(MAX_VISIBLE_SEMITONES, Math.round(pinchStartSpan * ratio * 10) / 10),
+    )
+    visibleSemitones.value = nextSpan
+    centerMidi.value = clampCenterMidi(centerMidi.value)
+    targetCenterMidi.value = clampCenterMidi(targetCenterMidi.value)
+    scheduleDraw()
+    return
+  }
+
+  if (Math.hypot(x - dragStartX, y - dragStartY) > 10) {
+    clearLongPressTimer()
+  }
+
   if (isDraggingPitch.value) {
     const dy = y - dragStartY
     const plotH = Math.max(1, canvasHeight - TOP_PAD - BOTTOM_PAD)
-    const deltaSemitones = (dy / plotH) * VISIBLE_SEMITONES
+    const deltaSemitones = (dy / plotH) * visibleSemitones.value
     if (Math.abs(dy) > 4 && props.autoFollow) {
       emit('update:autoFollow', false)
     }
@@ -411,6 +517,17 @@ function handlePointerMove(e: PointerEvent) {
 
 function handlePointerUp(e: PointerEvent) {
   const canvas = canvasRef.value
+  activePointers.delete(e.pointerId)
+  clearLongPressTimer()
+
+  if (isPinching) {
+    if (activePointers.size < 2) {
+      isPinching = false
+      showGestureToast(`音域视野 ${Math.round(visibleSemitones.value)} 半音`)
+    }
+    return
+  }
+
   if (isDraggingPitch.value && canvas) {
     const rect = canvas.getBoundingClientRect()
     const y = e.clientY - rect.top
@@ -419,22 +536,48 @@ function handlePointerUp(e: PointerEvent) {
       const { minMidi, maxMidi } = getMidiBounds()
       const clickedMidi = Math.round(yToMidi(y, minMidi, maxMidi))
       emit('auditionMidi', clickedMidi)
+      triggerHaptic(10)
     }
   }
-  if (isDraggingTime.value && canvas && e.pointerType === 'touch') {
+  if (canvas && !isDraggingPitch.value && !longPressTriggered && e.pointerType === 'touch') {
     const rect = canvas.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
-    if (Math.abs(x - dragStartX) < 6) {
-      updateHoverFromPointer(x, y)
-      scheduleDraw()
+    const moved = Math.hypot(x - dragStartX, y - dragStartY)
+    if (moved < 8) {
+      const now = performance.now()
+      const isDoubleTap =
+        now - lastTapTime < 300 && Math.hypot(x - lastTapX, y - lastTapY) < 28
+      if (isDoubleTap) {
+        lastTapTime = 0
+        timeOffset.value = 0
+        visibleSemitones.value = DEFAULT_VISIBLE_SEMITONES
+        emit('update:autoFollow', true)
+        hoveredInspection.value = null
+        emit('hover', null)
+        triggerHaptic(12)
+        showGestureToast('已恢复实时视角')
+        scheduleDraw()
+      } else {
+        lastTapTime = now
+        lastTapX = x
+        lastTapY = y
+        if (props.samples.length > 0) {
+          updateHoverFromPointer(x, y)
+          scheduleDraw()
+        }
+      }
     }
   }
   isDraggingPitch.value = false
   isDraggingTime.value = false
+  longPressTriggered = false
 }
 
 function handlePointerLeave() {
+  clearLongPressTimer()
+  activePointers.clear()
+  isPinching = false
   pointerPos.value = null
   isDraggingPitch.value = false
   isDraggingTime.value = false
@@ -1049,8 +1192,15 @@ onBeforeUnmount(() => {
     <!-- Subtle interaction hint when curve has data -->
     <div v-if="!isEmpty && !hoveredInspection && !guidedMode" class="canvas-hint" aria-hidden="true">
       <span class="hint-pointer">悬停曲线查看音高 · 拖动回看历史 · 点击左侧音阶试听</span>
-      <span class="hint-touch">点按曲线查音 · 左右拖动回看 · 拖动左侧音阶调音域</span>
+      <span class="hint-touch">长按试听音高 · 双指缩放音域 · 双击回实时</span>
     </div>
+
+    <!-- Transient gesture feedback toast -->
+    <Transition name="toast-fade">
+      <div v-if="gestureToast" class="gesture-toast" role="status" aria-live="polite">
+        {{ gestureToast }}
+      </div>
+    </Transition>
 
     <!-- Grade Feedback Floating Badge (Perfect / Great / Good / Miss) -->
     <Transition name="grade-pop">
@@ -1086,16 +1236,22 @@ onBeforeUnmount(() => {
       <div class="empty-card">
         <h2 class="empty-title">准备聆听你的声音</h2>
         <p class="empty-desc">
-          点击开始后对着麦克风哼唱或发声，画面将实时绘制音高曲线；悬停曲线任意位置可回看当时的准确音名与音分偏差，下方钢琴随时弹奏标准参考音。
+          点击开始后开口哼唱，实时绘制音高曲线；长按曲线可试听对应音高。
         </p>
         <div class="empty-actions">
           <button type="button" class="empty-cta-primary" @click="emit('startMic')">
-            开启麦克风开始检测
+            开始检测
           </button>
           <button type="button" class="empty-cta-secondary" @click="emit('loadDemo')">
             查看示例曲线
           </button>
         </div>
+      </div>
+      <div class="empty-mobile-pill">
+        <span class="empty-mobile-text">点下方开始试唱 · 长按画布听音</span>
+        <button type="button" class="empty-mobile-demo" @click="emit('loadDemo')">
+          示例
+        </button>
       </div>
     </div>
   </section>
@@ -1474,6 +1630,38 @@ onBeforeUnmount(() => {
   }
 }
 
+.gesture-toast {
+  position: absolute;
+  left: 50%;
+  top: 0.7rem;
+  transform: translateX(-50%);
+  z-index: 14;
+  padding: 0.28rem 0.72rem;
+  border-radius: var(--radius-pill);
+  background-color: rgba(15, 20, 26, 0.9);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-ivory);
+  font-size: 0.76rem;
+  font-weight: 500;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -6px);
+}
+
+.empty-mobile-pill {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .canvas-hint {
     display: none;
@@ -1481,6 +1669,46 @@ onBeforeUnmount(() => {
 
   .empty-overlay {
     inset: 0 0 28px 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .empty-card {
+    display: none;
+  }
+
+  .empty-overlay {
+    pointer-events: none;
+    align-items: flex-end;
+    padding-bottom: 2.2rem;
+  }
+
+  .empty-mobile-pill {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.36rem 0.45rem 0.36rem 0.85rem;
+    border-radius: var(--radius-pill);
+    background-color: rgba(17, 22, 28, 0.86);
+    border: 1px solid var(--border-strong);
+    backdrop-filter: blur(8px);
+  }
+
+  .empty-mobile-text {
+    font-size: 0.78rem;
+    color: var(--ink-secondary);
+  }
+
+  .empty-mobile-demo {
+    min-block-size: 1.8rem;
+    padding: 0.15rem 0.65rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--accent-brass);
+    background-color: var(--accent-brass-soft);
+    color: var(--accent-brass);
+    font-size: 0.76rem;
+    font-weight: 600;
   }
 }
 </style>

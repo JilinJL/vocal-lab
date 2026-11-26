@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core'
+import { App as CapApp } from '@capacitor/app'
+import { StatusBar, Style } from '@capacitor/status-bar'
 import type { PitchInfo } from './audio/pitchMath'
+import { setNativeKeepAwake, syncNativeClock } from './engine/nativeAudioPlugin'
 import { useMicrophonePitch } from './composables/useMicrophonePitch'
 import { usePiano } from './composables/usePiano'
 import { usePracticeSession } from './composables/usePracticeSession'
@@ -26,6 +30,7 @@ const isMobile = ref(false)
 const mobileSheetOpen = ref(false)
 const mobilePianoOpen = ref(false)
 let mobileMediaQuery: MediaQueryList | null = null
+let backButtonHandle: PluginListenerHandle | null = null
 
 const PRACTICE_PRESETS = [
   { min: 48, max: 55 }, // C3-G3
@@ -100,6 +105,19 @@ watch(
   },
 )
 
+watch(
+  () =>
+    mic.isListening.value ||
+    practice.status.value === 'running' ||
+    practice.status.value === 'countdown' ||
+    songPractice.status.value === 'running' ||
+    songPractice.status.value === 'countdown',
+  (active) => {
+    setNativeKeepAwake(active)
+  },
+  { immediate: true },
+)
+
 function syncIsMobile() {
   isMobile.value = mobileMediaQuery ? mobileMediaQuery.matches : window.innerWidth <= 900
   if (!isMobile.value) {
@@ -120,11 +138,39 @@ onMounted(() => {
   syncIsMobile()
   mobileMediaQuery.addEventListener('change', syncIsMobile)
   window.addEventListener('hashchange', handleHashChange)
+
+  if (Capacitor.isNativePlatform()) {
+    void syncNativeClock()
+    void StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
+    void StatusBar.setBackgroundColor({ color: '#11161c' }).catch(() => {})
+    void CapApp.addListener('backButton', () => {
+      if (mobilePianoOpen.value) {
+        mobilePianoOpen.value = false
+        return
+      }
+      if (mobileSheetOpen.value) {
+        mobileSheetOpen.value = false
+        return
+      }
+      if (mode.value !== 'monitor') {
+        mode.value = 'monitor'
+        return
+      }
+      void CapApp.exitApp()
+    }).then((handle) => {
+      backButtonHandle = handle
+    })
+  }
 })
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener('change', syncIsMobile)
   window.removeEventListener('hashchange', handleHashChange)
+  if (backButtonHandle) {
+    void backButtonHandle.remove()
+    backButtonHandle = null
+  }
+  setNativeKeepAwake(false)
 })
 
 const hasSamples = computed(() => {

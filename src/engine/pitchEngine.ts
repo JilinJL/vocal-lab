@@ -1,5 +1,11 @@
+import type { PluginListenerHandle } from '@capacitor/core'
 import { detectPitchYin } from '../audio/yinDetector'
 import { ensureAudioContextRunning, getSharedAudioContext } from './audioContext'
+import {
+  isNativeAudioActive,
+  updateNativeClockAnchor,
+  VocalLabAudio,
+} from './nativeAudioPlugin'
 
 export interface PitchFrame {
   /** AudioContext timestamp (seconds) centered on the analyzed buffer */
@@ -28,6 +34,7 @@ export class PitchEngine {
   private analyser: AnalyserNode | null = null
   private timeDomainBuffer: Float32Array<ArrayBuffer> | null = null
   private rafId: number | null = null
+  private nativeListener: PluginListenerHandle | null = null
   private running = false
   private starting = false
   private sessionToken = 0
@@ -98,6 +105,10 @@ export class PitchEngine {
   public async start(): Promise<{ ok: boolean; error?: string }> {
     if (this.running) return { ok: true }
     if (this.starting) return { ok: false }
+
+    if (isNativeAudioActive()) {
+      return this.startNative()
+    }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       const message = '当前浏览器不支持麦克风访问，请在 HTTPS 或 localhost 环境下使用现代浏览器。'
@@ -213,7 +224,70 @@ export class PitchEngine {
     }
   }
 
+  private async startNative(): Promise<{ ok: boolean; error?: string }> {
+    const token = ++this.sessionToken
+    this.starting = true
+    try {
+      const handle = await VocalLabAudio.addListener('pitchFrame', (ev) => {
+        if (!this.running || token !== this.sessionToken) return
+        updateNativeClockAnchor(ev.time)
+        const frame: PitchFrame = {
+          time: ev.time,
+          frequency:
+            typeof ev.frequency === 'number' && Number.isFinite(ev.frequency) ? ev.frequency : null,
+          clarity: ev.clarity ?? 0,
+          rms: ev.rms ?? 0,
+        }
+        for (const listener of this.frameListeners) {
+          listener(frame)
+        }
+      })
+
+      if (token !== this.sessionToken) {
+        await handle.remove()
+        return { ok: false }
+      }
+
+      const res = await VocalLabAudio.startCapture({
+        minHz: this.minFrequency,
+        maxHz: this.maxFrequency,
+      })
+
+      if (token !== this.sessionToken) {
+        await handle.remove()
+        await VocalLabAudio.stopCapture().catch(() => {})
+        return { ok: false }
+      }
+
+      if (typeof res?.clockTime === 'number') {
+        updateNativeClockAnchor(res.clockTime)
+      }
+      this.nativeListener = handle
+      this.running = true
+      this.starting = false
+      this.emitState(true)
+      return { ok: true }
+    } catch (err) {
+      this.starting = false
+      if (this.nativeListener) {
+        void this.nativeListener.remove()
+        this.nativeListener = null
+      }
+      const message =
+        err instanceof Error ? err.message : '无法启动原生音频采集，请检查麦克风权限。'
+      this.emitError(message)
+      return { ok: false, error: message }
+    }
+  }
+
   private cleanupNodes(): void {
+    if (this.nativeListener) {
+      void this.nativeListener.remove()
+      this.nativeListener = null
+    }
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.stopCapture().catch(() => {})
+    }
     if (this.rafId !== null) {
       window.cancelAnimationFrame(this.rafId)
       this.rafId = null

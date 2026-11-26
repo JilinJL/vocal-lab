@@ -3,12 +3,14 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 
 const basePath = process.env.BASE_PATH || '/'
+const isCapacitorBuild = process.env.CAPACITOR_BUILD === '1'
 
 export default defineConfig({
   base: basePath,
   plugins: [
     vue(),
     VitePWA({
+      disable: isCapacitorBuild,
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png'],
       manifest: {

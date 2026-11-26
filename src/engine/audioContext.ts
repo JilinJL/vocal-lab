@@ -1,3 +1,5 @@
+import { getNativeClockTime, isNativeAudioActive, syncNativeClock } from './nativeAudioPlugin'
+
 export type AudioContextStateExtended = AudioContextState | 'interrupted' | 'uninitialized'
 
 type StateListener = (state: AudioContextStateExtended) => void
@@ -35,16 +37,22 @@ export function getSharedAudioContext(): AudioContext {
   return sharedContext
 }
 
-export function ensureAudioContextRunning(): Promise<AudioContext> {
+export async function ensureAudioContextRunning(): Promise<AudioContext> {
+  if (isNativeAudioActive()) {
+    await syncNativeClock()
+  }
   const ctx = getSharedAudioContext()
   const state = ctx.state as AudioContextStateExtended
   if (state === 'suspended' || state === 'interrupted') {
-    return ctx.resume().then(() => ctx)
+    await ctx.resume()
   }
-  return Promise.resolve(ctx)
+  return ctx
 }
 
 export function getAudioTime(): number {
+  if (isNativeAudioActive()) {
+    return getNativeClockTime()
+  }
   if (!sharedContext || sharedContext.state === 'closed') {
     return 0
   }

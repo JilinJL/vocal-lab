@@ -1,7 +1,18 @@
 import { midiToFrequency } from './pitchMath'
 import { ensureAudioContextRunning, getSharedAudioContext } from '../engine/audioContext'
+import {
+  allocateScheduleId,
+  isNativeAudioActive,
+  VocalLabAudio,
+} from '../engine/nativeAudioPlugin'
 
 export type PianoTimbre = 'sampled' | 'rhodes' | 'sine'
+
+function timbreToNativeIndex(timbre: PianoTimbre): number {
+  if (timbre === 'rhodes') return 1
+  if (timbre === 'sine') return 2
+  return 0
+}
 
 const SAMPLE_NOTE_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'] as const
 
@@ -116,6 +127,14 @@ export class PianoSynthesizer {
 
   public setVolume(value: number): void {
     this.volume = Math.max(0, Math.min(1, value))
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.setSynthParams({
+        volume: this.volume,
+        timbre: timbreToNativeIndex(this.timbre),
+        a4Hz: this.a4Hz,
+      }).catch(() => {})
+      return
+    }
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02)
     }
@@ -123,13 +142,37 @@ export class PianoSynthesizer {
 
   public setTimbre(timbre: PianoTimbre): void {
     this.timbre = timbre
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.setSynthParams({
+        volume: this.volume,
+        timbre: timbreToNativeIndex(this.timbre),
+        a4Hz: this.a4Hz,
+      }).catch(() => {})
+    }
   }
 
   public setA4Hz(hz: number): void {
     this.a4Hz = hz
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.setSynthParams({
+        volume: this.volume,
+        timbre: timbreToNativeIndex(this.timbre),
+        a4Hz: this.a4Hz,
+      }).catch(() => {})
+    }
   }
 
   public noteOn(midi: number, options?: { sustain?: boolean; velocity?: number }): void {
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.noteOn({
+        midi: Math.round(midi),
+        velocity: options?.velocity ?? 0.88,
+        sustain: options?.sustain ?? false,
+        timbre: timbreToNativeIndex(this.timbre),
+        a4Hz: this.a4Hz,
+      }).catch(() => {})
+      return
+    }
     const ctx = this.ensureContext()
     if (!this.masterGain) return
 
@@ -415,6 +458,13 @@ export class PianoSynthesizer {
   }
 
   public noteOff(midi: number, releaseTime = 0.45): void {
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.noteOff({
+        midi: Math.round(midi),
+        releaseSec: releaseTime,
+      }).catch(() => {})
+      return
+    }
     const voice = this.voices.get(midi)
     if (voice) {
       voice.stop(releaseTime)
@@ -431,6 +481,23 @@ export class PianoSynthesizer {
     duration: number,
     options?: { velocity?: number; releaseTime?: number },
   ): ScheduledNoteHandle {
+    if (isNativeAudioActive()) {
+      const id = allocateScheduleId()
+      void VocalLabAudio.scheduleNote({
+        id,
+        midi: Math.round(midi),
+        startTime,
+        duration: Math.max(0.05, duration),
+        velocity: options?.velocity ?? 0.82,
+        timbre: timbreToNativeIndex(this.timbre),
+        a4Hz: this.a4Hz,
+      }).catch(() => {})
+      return {
+        cancel: () => {
+          void VocalLabAudio.cancelScheduled({ id }).catch(() => {})
+        },
+      }
+    }
     const ctx = this.ensureContext()
     const master = this.masterGain
     if (!master) {
@@ -562,6 +629,10 @@ export class PianoSynthesizer {
   }
 
   public stopAll(): void {
+    if (isNativeAudioActive()) {
+      void VocalLabAudio.stopAllNotes().catch(() => {})
+      return
+    }
     for (const voice of Array.from(this.voices.values())) {
       voice.stop(0.14)
     }

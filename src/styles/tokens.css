@@ -28,6 +28,16 @@
   --pitch-flat: #63b3ed;
   --pitch-flat-soft: color-mix(in oklab, #63b3ed 16%, #0b0f14);
 
+  /* Practice Grading Semantics (always paired with text badge) */
+  --grade-perfect: #f5c542;
+  --grade-perfect-soft: color-mix(in oklab, #f5c542 18%, #0b0f14);
+  --grade-great: #4fd1a5;
+  --grade-great-soft: color-mix(in oklab, #4fd1a5 18%, #0b0f14);
+  --grade-good: #63b3ed;
+  --grade-good-soft: color-mix(in oklab, #63b3ed 18%, #0b0f14);
+  --grade-miss: #ee7863;
+  --grade-miss-soft: color-mix(in oklab, #ee7863 18%, #0b0f14);
+
   /* Typography */
   --font-display: 'Newsreader', 'Songti SC', Georgia, serif;
   --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;

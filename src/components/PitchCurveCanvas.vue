@@ -10,6 +10,8 @@ import {
   type PitchInfo,
   type PitchSample,
 } from '../audio/pitchMath'
+import { GRADE_LABELS } from '../practice/grading'
+import type { GradeFeedbackPopup, PracticeGrade, TargetBar } from '../practice/types'
 
 export interface HoverInspection {
   pitch: PitchInfo
@@ -29,6 +31,11 @@ interface Props {
   autoFollow: boolean
   referenceMidi: number | null
   errorMessage: string | null
+  targets?: TargetBar[]
+  playheadTime?: number | null
+  guidedMode?: boolean
+  countdownValue?: number | null
+  gradePopup?: GradeFeedbackPopup | null
 }
 
 const props = defineProps<Props>()
@@ -74,8 +81,11 @@ let canvasHeight = 420
 let resizeObserver: ResizeObserver | null = null
 let drawRafId: number | null = null
 
-const isEmpty = computed(() => props.samples.length === 0 && !props.isListening)
-const isPannedAway = computed(() => timeOffset.value > 0.15)
+const hasTargets = computed(() => (props.targets?.length ?? 0) > 0)
+const isEmpty = computed(
+  () => !props.guidedMode && props.samples.length === 0 && !props.isListening && !hasTargets.value,
+)
+const isPannedAway = computed(() => !props.guidedMode && timeOffset.value > 0.15)
 
 const maxRecordedTime = computed(() => {
   void props.sampleVersion
@@ -85,6 +95,12 @@ const maxRecordedTime = computed(() => {
 })
 
 function getTimeBounds(): { startTime: number; endTime: number } {
+  if (props.guidedMode) {
+    const span = Math.max(6, Math.min(12, props.windowSeconds))
+    const ph = props.playheadTime ?? 0
+    const startTime = Math.max(0, ph - span * 0.36)
+    return { startTime, endTime: startTime + span }
+  }
   const maxT = maxRecordedTime.value
   const endTime = Math.max(props.windowSeconds, maxT - timeOffset.value)
   const startTime = endTime - props.windowSeconds
@@ -122,6 +138,51 @@ function yToMidi(y: number, minMidi: number, maxMidi: number): number {
 }
 
 const TRACE_COLOR = '#4FD1A5'
+
+const GRADE_COLORS: Record<PracticeGrade, { fill: string; stroke: string; text: string; short: string }> = {
+  perfect: {
+    fill: 'rgba(245, 197, 66, 0.34)',
+    stroke: '#F5C542',
+    text: '#FDE68A',
+    short: 'P',
+  },
+  great: {
+    fill: 'rgba(79, 209, 165, 0.30)',
+    stroke: '#4FD1A5',
+    text: '#9AE6CE',
+    short: 'Gr',
+  },
+  good: {
+    fill: 'rgba(99, 179, 237, 0.28)',
+    stroke: '#63B3ED',
+    text: '#B3DCFA',
+    short: 'Gd',
+  },
+  miss: {
+    fill: 'rgba(238, 120, 99, 0.26)',
+    stroke: '#EE7863',
+    text: '#F7B0A3',
+    short: '×',
+  },
+}
+
+const popupVisible = ref(false)
+let popupHideTimer: number | null = null
+
+watch(
+  () => props.gradePopup?.id,
+  (id) => {
+    if (!id) {
+      popupVisible.value = false
+      return
+    }
+    popupVisible.value = true
+    if (popupHideTimer !== null) window.clearTimeout(popupHideTimer)
+    popupHideTimer = window.setTimeout(() => {
+      popupVisible.value = false
+    }, 1150)
+  },
+)
 
 function clampCenterMidi(val: number): number {
   const half = VISIBLE_SEMITONES / 2
@@ -174,11 +235,36 @@ watch(
 )
 
 watch(
-  () => [props.windowSeconds, props.referenceMidi, props.a4Hz, props.isListening],
+  () => [
+    props.windowSeconds,
+    props.referenceMidi,
+    props.a4Hz,
+    props.isListening,
+    props.playheadTime,
+    props.targets,
+    props.guidedMode,
+  ],
   () => {
     timeOffset.value = clampTimeOffset(timeOffset.value)
+    if (props.guidedMode && props.targets && props.targets.length > 0) {
+      const ph = props.playheadTime ?? 0
+      const nearby = props.targets.filter((t) => t.end >= ph - 0.5 && t.start <= ph + 5)
+      const source = nearby.length > 0 ? nearby : props.targets.slice(0, 12)
+      let minM = Infinity
+      let maxM = -Infinity
+      for (const item of source) {
+        if (item.midi < minM) minM = item.midi
+        if (item.midi > maxM) maxM = item.midi
+      }
+      if (Number.isFinite(minM) && Number.isFinite(maxM)) {
+        const mid = (minM + maxM) / 2
+        if (Math.abs(mid - targetCenterMidi.value) > 2.2) {
+          targetCenterMidi.value = clampCenterMidi(mid)
+        }
+      }
+    }
     // Also bring reference note into view if autoFollow is on and user presses a distant piano key
-    if (props.referenceMidi !== null && props.autoFollow && !props.isListening) {
+    if (props.referenceMidi !== null && props.autoFollow && !props.isListening && !props.guidedMode) {
       const { minMidi, maxMidi } = getMidiBounds()
       if (props.referenceMidi < minMidi + 2 || props.referenceMidi > maxMidi - 2) {
         targetCenterMidi.value = clampCenterMidi(props.referenceMidi)
@@ -333,6 +419,15 @@ function handlePointerUp(e: PointerEvent) {
       const { minMidi, maxMidi } = getMidiBounds()
       const clickedMidi = Math.round(yToMidi(y, minMidi, maxMidi))
       emit('auditionMidi', clickedMidi)
+    }
+  }
+  if (isDraggingTime.value && canvas && e.pointerType === 'touch') {
+    const rect = canvas.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    if (Math.abs(x - dragStartX) < 6) {
+      updateHoverFromPointer(x, y)
+      scheduleDraw()
     }
   }
   isDraggingPitch.value = false
@@ -505,6 +600,83 @@ function renderCanvas() {
       ctx.fillStyle = '#E4B653'
       ctx.textBaseline = 'middle'
       ctx.fillText(label, bx + 7, by + 10.5)
+    }
+  }
+
+  // 4b. Guided Practice / Song Target Pitch Bars
+  if (props.targets && props.targets.length > 0) {
+    const ph = props.playheadTime ?? -1
+    const barH = Math.max(12, Math.min(26, semitonePx * 0.86))
+
+    for (const target of props.targets) {
+      if (target.end < startTime - 0.1 || target.start > endTime + 0.1) continue
+      const x1 = timeToX(target.start, startTime, endTime)
+      const x2 = timeToX(target.end, startTime, endTime)
+      const w = Math.max(8, x2 - x1)
+      const yCenter = midiToY(target.midi, minMidi, maxMidi)
+      const yTop = yCenter - barH / 2
+
+      const isActive = ph >= target.start && ph <= target.end
+      const effectiveGrade = target.grade ?? (isActive ? target.provisionalGrade : null) ?? null
+
+      ctx.save()
+      if (target.phase === 'demo') {
+        ctx.fillStyle = isActive ? 'rgba(228, 182, 83, 0.30)' : 'rgba(228, 182, 83, 0.14)'
+        ctx.strokeStyle = isActive ? '#E4B653' : 'rgba(228, 182, 83, 0.55)'
+        ctx.setLineDash([4, 3])
+        ctx.lineWidth = isActive ? 1.8 : 1.1
+      } else if (effectiveGrade) {
+        const palette = GRADE_COLORS[effectiveGrade]
+        ctx.fillStyle = palette.fill
+        ctx.strokeStyle = palette.stroke
+        ctx.lineWidth = isActive ? 2.2 : 1.5
+      } else {
+        ctx.fillStyle = isActive ? 'rgba(165, 178, 194, 0.24)' : 'rgba(165, 178, 194, 0.12)'
+        ctx.strokeStyle = isActive ? '#F2EDE4' : 'rgba(165, 178, 194, 0.42)'
+        ctx.lineWidth = isActive ? 1.8 : 1.1
+      }
+
+      ctx.beginPath()
+      ctx.roundRect(x1, yTop, w, barH, Math.min(6, barH / 2))
+      ctx.fill()
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      if (w >= 30 && target.label) {
+        ctx.font = '600 11px "Plus Jakarta Sans", -apple-system, sans-serif'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = effectiveGrade
+          ? GRADE_COLORS[effectiveGrade].text
+          : target.phase === 'demo'
+            ? '#E4B653'
+            : '#E2E8F0'
+        ctx.fillText(target.label, x1 + 7, yCenter + 0.5)
+      }
+
+      if (target.grade && w >= 48) {
+        const palette = GRADE_COLORS[target.grade]
+        ctx.font = '700 10px "Plus Jakarta Sans", -apple-system, sans-serif'
+        ctx.textAlign = 'right'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = palette.stroke
+        ctx.fillText(palette.short, x1 + w - 6, yCenter + 0.5)
+      }
+      ctx.restore()
+    }
+
+    if (props.guidedMode && props.playheadTime !== null && props.playheadTime !== undefined) {
+      const px = timeToX(props.playheadTime, startTime, endTime)
+      if (px >= AXIS_WIDTH && px <= AXIS_WIDTH + plotW) {
+        ctx.save()
+        ctx.strokeStyle = 'rgba(228, 182, 83, 0.92)'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(px, TOP_PAD)
+        ctx.lineTo(px, TOP_PAD + plotH)
+        ctx.stroke()
+        ctx.restore()
+      }
     }
   }
 
@@ -802,6 +974,9 @@ onBeforeUnmount(() => {
   if (drawRafId !== null) {
     window.cancelAnimationFrame(drawRafId)
   }
+  if (popupHideTimer !== null) {
+    window.clearTimeout(popupHideTimer)
+  }
 })
 </script>
 
@@ -872,8 +1047,38 @@ onBeforeUnmount(() => {
     </button>
 
     <!-- Subtle interaction hint when curve has data -->
-    <div v-if="!isEmpty && !hoveredInspection" class="canvas-hint" aria-hidden="true">
-      悬停曲线查看音高 · 拖动回看历史 · 点击左侧音阶试听
+    <div v-if="!isEmpty && !hoveredInspection && !guidedMode" class="canvas-hint" aria-hidden="true">
+      <span class="hint-pointer">悬停曲线查看音高 · 拖动回看历史 · 点击左侧音阶试听</span>
+      <span class="hint-touch">点按曲线查音 · 左右拖动回看 · 拖动左侧音阶调音域</span>
+    </div>
+
+    <!-- Grade Feedback Floating Badge (Perfect / Great / Good / Miss) -->
+    <Transition name="grade-pop">
+      <div
+        v-if="popupVisible && gradePopup"
+        :key="gradePopup.id"
+        class="grade-popup"
+        :class="`grade-${gradePopup.grade}`"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="grade-popup-en">{{ GRADE_LABELS[gradePopup.grade].title }}</span>
+        <span class="grade-popup-zh">{{ GRADE_LABELS[gradePopup.grade].zh }}</span>
+        <span v-if="gradePopup.grade !== 'miss'" class="grade-popup-cents tabular">
+          {{ formatCents(gradePopup.meanCents) }}
+        </span>
+        <span v-if="gradePopup.combo >= 2" class="grade-popup-combo tabular">
+          {{ gradePopup.combo }} 连击
+        </span>
+      </div>
+    </Transition>
+
+    <!-- 3-2-1 Countdown Overlay -->
+    <div v-if="countdownValue && countdownValue > 0" class="countdown-overlay" role="status" aria-live="assertive">
+      <div class="countdown-ring">
+        <span class="countdown-num tabular">{{ countdownValue }}</span>
+        <span class="countdown-label">准备发声</span>
+      </div>
     </div>
 
     <!-- Inviting empty state -->
@@ -1046,6 +1251,145 @@ onBeforeUnmount(() => {
   color: var(--ink-muted);
   font-size: 0.74rem;
   pointer-events: none;
+}
+
+.hint-touch {
+  display: none;
+}
+
+@media (hover: none) {
+  .hint-pointer {
+    display: none;
+  }
+  .hint-touch {
+    display: inline;
+  }
+}
+
+/* Floating Grade Feedback Badge */
+.grade-popup {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 14;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.48rem 0.9rem;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border-strong);
+  background-color: color-mix(in oklab, var(--surface-panel) 94%, transparent);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.grade-popup-en {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.grade-popup-zh {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.grade-popup-cents {
+  font-size: 0.78rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: var(--radius-pill);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.grade-popup-combo {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--accent-brass);
+}
+
+.grade-perfect {
+  border-color: var(--grade-perfect);
+  background-color: var(--grade-perfect-soft);
+  color: var(--grade-perfect);
+}
+
+.grade-great {
+  border-color: var(--grade-great);
+  background-color: var(--grade-great-soft);
+  color: var(--grade-great);
+}
+
+.grade-good {
+  border-color: var(--grade-good);
+  background-color: var(--grade-good-soft);
+  color: var(--grade-good);
+}
+
+.grade-miss {
+  border-color: var(--grade-miss);
+  background-color: var(--grade-miss-soft);
+  color: var(--grade-miss);
+}
+
+.grade-pop-enter-active,
+.grade-pop-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.grade-pop-enter-from {
+  opacity: 0;
+  transform: translateY(8px) scale(0.92);
+}
+
+.grade-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grade-pop-enter-active,
+  .grade-pop-leave-active {
+    transition: none;
+  }
+}
+
+/* Countdown Overlay */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  background-color: rgba(11, 15, 20, 0.45);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.countdown-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  background-color: var(--surface-panel);
+  border: 2px solid var(--accent-brass);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.countdown-num {
+  font-family: var(--font-display);
+  font-size: 3rem;
+  line-height: 1;
+  color: var(--accent-brass);
+}
+
+.countdown-label {
+  font-size: 0.74rem;
+  color: var(--ink-secondary);
+  margin-top: 0.15rem;
 }
 
 /* Empty State Overlay */

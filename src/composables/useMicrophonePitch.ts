@@ -6,11 +6,11 @@ import {
   type PitchInfo,
   type PitchSample,
 } from '../audio/pitchMath'
-import { detectPitchYin } from '../audio/yinDetector'
 import { generateDemoVocalPhrase } from '../audio/demoPhrase'
+import { PitchEngine, type PitchFrame } from '../engine/pitchEngine'
+import { getAudioTime } from '../engine/audioContext'
 
 const MAX_SAMPLES = 24000 // ~8 minutes at ~50Hz sampling
-const SAMPLE_INTERVAL_MS = 20 // ~50 points/sec for smooth curve + vibrato fidelity
 
 export function useMicrophonePitch(a4Hz: Ref<number>) {
   const isListening = ref(false)
@@ -21,21 +21,21 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
   const currentTime = ref(0)
   const currentPitch = ref<PitchInfo | null>(null)
   const lastStablePitch = ref<PitchInfo | null>(null)
+  const recordHistory = ref(true)
 
   // Raw sample array kept out of deep reactivity for smooth 60fps canvas rendering
   const samples = shallowRef<PitchSample[]>([])
   const sampleVersion = ref(0)
 
-  let audioCtx: AudioContext | null = null
-  let mediaStream: MediaStream | null = null
-  let sourceNode: MediaStreamAudioSourceNode | null = null
-  let analyser: AnalyserNode | null = null
-  let timeDomainBuffer: Float32Array<ArrayBuffer> | null = null
-  let rafId: number | null = null
+  const engine = new PitchEngine({
+    fftSize: 4096,
+    minIntervalMs: 20,
+    minFrequency: 60,
+    maxFrequency: 1250,
+  })
 
   let sessionBaseTime = 0
-  let segmentStartPerf = 0
-  let lastRecordPerf = 0
+  let segmentStartAudioTime = 0
   let recentMidis: number[] = []
   let smoothedMidi: number | null = null
   let silenceFrames = 0
@@ -93,30 +93,20 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     return c
   }
 
-  function processFrame(now: number) {
-    if (!isListening.value || !analyser || !timeDomainBuffer || !audioCtx) return
-
-    analyser.getFloatTimeDomainData(timeDomainBuffer)
-    const detection = detectPitchYin(timeDomainBuffer, audioCtx.sampleRate, {
-      minFrequency: 65,
-      maxFrequency: 1180,
-      threshold: 0.14,
-      rmsThreshold: 0.0085,
-    })
-
+  function handleFrame(frame: PitchFrame) {
     // Smooth VU meter visually
-    const normalizedRms = Math.min(1, Math.pow(detection.rms * 6.5, 0.72))
+    const normalizedRms = Math.min(1, Math.pow(frame.rms * 6.5, 0.72))
     inputLevel.value = inputLevel.value * 0.65 + normalizedRms * 0.35
 
-    const elapsed = sessionBaseTime + (now - segmentStartPerf) / 1000
+    const elapsed = Math.max(sessionBaseTime, sessionBaseTime + (frame.time - segmentStartAudioTime))
     currentTime.value = elapsed
 
     let acceptedMidi: number | null = null
     let acceptedFreq: number | null = null
 
-    if (detection.frequency !== null && detection.clarity >= 0.76) {
+    if (frame.frequency !== null && frame.clarity >= 0.76) {
       silenceFrames = 0
-      const rawMidi = frequencyToMidi(detection.frequency, a4Hz.value)
+      const rawMidi = frequencyToMidi(frame.frequency, a4Hz.value)
 
       // Keep short 3-sample median window to suppress single-frame consonant glitches
       recentMidis.push(rawMidi)
@@ -135,8 +125,8 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
       }
 
       acceptedMidi = smoothedMidi
-      acceptedFreq = detection.frequency
-      clarity.value = detection.clarity
+      acceptedFreq = frame.frequency
+      clarity.value = frame.clarity
 
       const info = describePitchFromMidi(acceptedMidi, a4Hz.value, acceptedFreq)
       currentPitch.value = info
@@ -151,140 +141,77 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
       }
     }
 
-    if (now - lastRecordPerf >= SAMPLE_INTERVAL_MS) {
-      lastRecordPerf = now
+    if (recordHistory.value) {
       const list = samples.value
       list.push({
         time: elapsed,
         frequency: acceptedFreq,
         midi: acceptedMidi,
-        clarity: detection.clarity,
-        rms: detection.rms,
+        clarity: frame.clarity,
+        rms: frame.rms,
       })
       if (list.length > MAX_SAMPLES) {
         list.splice(0, list.length - MAX_SAMPLES)
       }
       sampleVersion.value++
     }
-
-    rafId = window.requestAnimationFrame(processFrame)
   }
+
+  const unsubFrame = engine.subscribe(handleFrame)
+  const unsubError = engine.onError((msg) => {
+    errorMessage.value = msg
+  })
+  const unsubState = engine.onStateChange((active) => {
+    isListening.value = active
+    if (!active) {
+      sessionBaseTime = currentTime.value
+      inputLevel.value = 0
+      clarity.value = 0
+      currentPitch.value = null
+    }
+  })
 
   async function start(): Promise<boolean> {
     errorMessage.value = null
 
     if (isListening.value) return true
 
-    if (!navigator.mediaDevices?.getUserMedia) {
-      errorMessage.value = '当前浏览器不支持麦克风访问，请在 HTTPS 或 localhost 环境下使用现代浏览器。'
-      return false
+    // If switching from demo preview to live mic, clear demo data first
+    if (isDemo.value) {
+      clear()
     }
 
-    try {
-      // If switching from demo preview to live mic, clear demo data first
-      if (isDemo.value) {
-        clear()
-      }
-
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-      audioCtx = new AudioCtx()
-      const resumePromise =
-        audioCtx.state === 'suspended' ? audioCtx.resume() : Promise.resolve()
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
+    if (samples.value.length > 0 && recordHistory.value) {
+      const lastT = samples.value[samples.value.length - 1]!.time
+      sessionBaseTime = lastT + 0.35
+      samples.value.push({
+        time: lastT + 0.12,
+        frequency: null,
+        midi: null,
+        clarity: 0,
+        rms: 0,
       })
+    } else if (!recordHistory.value) {
+      sessionBaseTime = currentTime.value
+    } else {
+      sessionBaseTime = 0
+    }
 
-      await resumePromise
+    recentMidis = []
+    smoothedMidi = null
+    silenceFrames = 0
+    isDemo.value = false
 
-      mediaStream = stream
-      sourceNode = audioCtx.createMediaStreamSource(stream)
-      analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 4096
-      analyser.smoothingTimeConstant = 0
-
-      sourceNode.connect(analyser)
-      timeDomainBuffer = new Float32Array(new ArrayBuffer(analyser.fftSize * 4))
-
-      // If resuming after a pause, add a brief silence break so curves don't connect across pause
-      if (samples.value.length > 0) {
-        const lastT = samples.value[samples.value.length - 1]!.time
-        sessionBaseTime = lastT + 0.35
-        samples.value.push({
-          time: lastT + 0.12,
-          frequency: null,
-          midi: null,
-          clarity: 0,
-          rms: 0,
-        })
-      } else {
-        sessionBaseTime = 0
-      }
-
-      segmentStartPerf = performance.now()
-      lastRecordPerf = 0
-      recentMidis = []
-      smoothedMidi = null
-      silenceFrames = 0
-      isDemo.value = false
-      isListening.value = true
-
-      rafId = window.requestAnimationFrame(processFrame)
-      return true
-    } catch (err) {
-      cleanupAudio()
-      const domErr = err as DOMException | undefined
-      if (domErr?.name === 'NotAllowedError' || domErr?.name === 'PermissionDeniedError') {
-        errorMessage.value = '麦克风权限被拒绝。请在浏览器地址栏允许麦克风访问后重试。'
-      } else if (domErr?.name === 'NotFoundError' || domErr?.name === 'DevicesNotFoundError') {
-        errorMessage.value = '未检测到可用的麦克风设备，请检查音频输入连接。'
-      } else {
-        errorMessage.value = `无法启动麦克风：${domErr?.message ?? '未知音频设备错误'}`
-      }
+    const res = await engine.start()
+    if (!res.ok) {
       return false
     }
-  }
-
-  function cleanupAudio() {
-    if (rafId !== null) {
-      window.cancelAnimationFrame(rafId)
-      rafId = null
-    }
-    if (sourceNode) {
-      sourceNode.disconnect()
-      sourceNode = null
-    }
-    if (analyser) {
-      analyser.disconnect()
-      analyser = null
-    }
-    if (mediaStream) {
-      for (const track of mediaStream.getTracks()) {
-        track.stop()
-      }
-      mediaStream = null
-    }
-    if (audioCtx) {
-      void audioCtx.close()
-      audioCtx = null
-    }
-    timeDomainBuffer = null
+    segmentStartAudioTime = getAudioTime()
+    return true
   }
 
   function stop() {
-    if (!isListening.value) return
-    isListening.value = false
-    sessionBaseTime = currentTime.value
-    inputLevel.value = 0
-    clarity.value = 0
-    currentPitch.value = null
-    cleanupAudio()
+    engine.stop()
   }
 
   function clear() {
@@ -299,7 +226,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     isDemo.value = false
     errorMessage.value = null
     if (isListening.value) {
-      segmentStartPerf = performance.now()
+      segmentStartAudioTime = getAudioTime()
     }
   }
 
@@ -327,10 +254,15 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
   }
 
   onBeforeUnmount(() => {
+    unsubFrame()
+    unsubError()
+    unsubState()
     stop()
   })
 
   return {
+    engine,
+    recordHistory,
     isListening,
     isDemo,
     errorMessage,

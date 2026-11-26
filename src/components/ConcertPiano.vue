@@ -131,6 +131,7 @@ const vocalNearestMidi = computed(() =>
 const isPointerGlissando = ref(false)
 const pointerHeldMidi = ref<number | null>(null)
 const keyboardHeldMidis = new Set<number>()
+const isCollapsed = ref(false)
 
 function centerScrollOnMidi(midi: number, smooth = false) {
   const scroller = scrollEl.value
@@ -212,6 +213,20 @@ function handleKeyUp(e: KeyboardEvent) {
   }
 }
 
+function releaseAllHeldNotes() {
+  releasePointerNote()
+  for (const midi of Array.from(keyboardHeldMidis)) {
+    keyboardHeldMidis.delete(midi)
+    emit('releaseNote', midi)
+  }
+}
+
+function handleVisibilityRelease() {
+  if (document.hidden) {
+    releaseAllHeldNotes()
+  }
+}
+
 function onVolumeInput(e: Event) {
   const val = Number((e.target as HTMLInputElement).value)
   emit('update:volume', val)
@@ -224,12 +239,18 @@ const timbreOptions: ReadonlyArray<{ id: PianoTimbre; label: string }> = [
 ]
 
 onMounted(() => {
-  // Center the 88-key bed around middle C (C4–E4) on smaller screens
-  window.requestAnimationFrame(() => centerScrollOnMidi(64, false))
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    isCollapsed.value = true
+  } else {
+    // Center the 88-key bed around middle C (C4–E4) on smaller screens
+    window.requestAnimationFrame(() => centerScrollOnMidi(64, false))
+  }
   window.addEventListener('pointerup', releasePointerNote)
   window.addEventListener('pointercancel', releasePointerNote)
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
+  window.addEventListener('blur', releaseAllHeldNotes)
+  document.addEventListener('visibilitychange', handleVisibilityRelease)
 })
 
 onBeforeUnmount(() => {
@@ -237,6 +258,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointercancel', releasePointerNote)
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('keyup', handleKeyUp)
+  window.removeEventListener('blur', releaseAllHeldNotes)
+  document.removeEventListener('visibilitychange', handleVisibilityRelease)
+})
+
+watch(isCollapsed, (collapsed) => {
+  if (!collapsed) {
+    window.requestAnimationFrame(() => centerScrollOnMidi(64, false))
+  }
 })
 </script>
 
@@ -245,6 +274,14 @@ onBeforeUnmount(() => {
     <!-- Top Hardware Console Rail -->
     <div class="piano-rail">
       <div class="rail-left">
+        <button
+          type="button"
+          class="rail-toggle collapse-btn"
+          :aria-expanded="!isCollapsed"
+          @click="isCollapsed = !isCollapsed"
+        >
+          <span>{{ isCollapsed ? '展开钢琴' : '收起钢琴' }}</span>
+        </button>
         <span class="deck-name">88 键标准音钢琴</span>
         <span class="deck-range tabular">A0 – C8</span>
 
@@ -261,7 +298,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="octave-ctrl" role="group" aria-label="电脑键盘映射八度切换">
+        <div class="octave-ctrl desktop-only" role="group" aria-label="电脑键盘映射八度切换">
           <button
             type="button"
             class="rail-icon-btn"
@@ -298,7 +335,7 @@ onBeforeUnmount(() => {
 
         <button
           type="button"
-          class="rail-toggle"
+          class="rail-toggle desktop-only"
           :aria-pressed="showKeyShortcuts"
           title="显示或隐藏电脑键盘弹奏键位提示"
           @click="emit('update:showKeyShortcuts', !showKeyShortcuts)"
@@ -323,7 +360,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Tactile 88-Key Concert Piano Keyboard Bed -->
-    <div ref="scrollRef" class="keyboard-scroll studio-scroll">
+    <div v-show="!isCollapsed" ref="scrollRef" class="keyboard-scroll studio-scroll">
       <div
         class="keyboard-bed"
         :style="{ '--white-count': keys.whiteCount }"
@@ -564,7 +601,8 @@ onBeforeUnmount(() => {
   overflow-x: auto;
   overflow-y: hidden;
   background: linear-gradient(180deg, #0b0e13 0%, #141a22 100%);
-  padding: 0 0.75rem 0.7rem;
+  padding: 0 0.75rem max(0.7rem, env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
 }
 
 .keyboard-bed {
@@ -772,6 +810,27 @@ onBeforeUnmount(() => {
       transform 45ms ease,
       background 80ms ease,
       box-shadow 80ms ease;
+  }
+}
+
+@media (max-width: 900px) {
+  .piano-rail {
+    padding: 0.45rem 0.75rem;
+    gap: 0.45rem;
+  }
+
+  .deck-range,
+  .desktop-only {
+    display: none;
+  }
+
+  .keyboard-bed {
+    min-inline-size: 1924px;
+    block-size: 126px;
+  }
+
+  .vol-slider {
+    inline-size: 68px;
   }
 }
 

@@ -1,4 +1,5 @@
 import { midiToFrequency } from './pitchMath'
+import { ensureAudioContextRunning, getSharedAudioContext } from '../engine/audioContext'
 
 export type PianoTimbre = 'sampled' | 'rhodes' | 'sine'
 
@@ -15,6 +16,10 @@ export function midiToSampleUrl(midi: number): string {
 interface ActiveVoice {
   stop: (releaseTime?: number) => void
   midi: number
+}
+
+export interface ScheduledNoteHandle {
+  cancel: () => void
 }
 
 /**
@@ -36,11 +41,9 @@ export class PianoSynthesizer {
   private a4Hz = 440
 
   private ensureContext(): AudioContext {
-    if (!this.ctx) {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-      this.ctx = new AudioCtx()
+    const shared = getSharedAudioContext()
+    if (this.ctx !== shared || !this.masterGain || !this.compressor) {
+      this.ctx = shared
       this.compressor = this.ctx.createDynamicsCompressor()
       this.compressor.threshold.value = -14
       this.compressor.knee.value = 18
@@ -55,9 +58,7 @@ export class PianoSynthesizer {
       this.compressor.connect(this.ctx.destination)
     }
 
-    if (this.ctx.state === 'suspended') {
-      void this.ctx.resume()
-    }
+    void ensureAudioContextRunning()
 
     if (!this.preloadedCore) {
       this.preloadedCore = true
@@ -420,6 +421,146 @@ export class PianoSynthesizer {
     }
   }
 
+  /**
+   * Schedule a note on the shared AudioContext clock for Practice / Song playback.
+   * Returns a handle that cancels the note immediately if paused/stopped.
+   */
+  public scheduleNote(
+    midi: number,
+    startTime: number,
+    duration: number,
+    options?: { velocity?: number; releaseTime?: number },
+  ): ScheduledNoteHandle {
+    const ctx = this.ensureContext()
+    const master = this.masterGain
+    if (!master) {
+      return { cancel: () => {} }
+    }
+
+    const velocity = options?.velocity ?? 0.8
+    const release = Math.max(0.03, options?.releaseTime ?? 0.09)
+    const safeStart = Math.max(ctx.currentTime + 0.004, startTime)
+    const safeEnd = Math.max(safeStart + 0.05, safeStart + duration)
+    const clampedMidi = Math.max(21, Math.min(108, Math.round(midi)))
+
+    let cancelled = false
+    let stopScheduled: (() => void) | null = null
+    let activeNodes: AudioNode[] = []
+
+    const playAtTime = (buffer: AudioBuffer | null) => {
+      if (cancelled || !this.ctx || !this.masterGain) return
+      const now = this.ctx.currentTime
+      const actualStart = Math.max(now + 0.002, safeStart)
+      if (actualStart >= safeEnd) return
+
+      const voiceGain = this.ctx.createGain()
+      voiceGain.gain.setValueAtTime(0.0001, actualStart)
+      voiceGain.gain.linearRampToValueAtTime(
+        (buffer ? 0.92 : 0.34) * velocity,
+        actualStart + 0.008,
+      )
+      voiceGain.gain.setValueAtTime((buffer ? 0.88 : 0.28) * velocity, Math.max(actualStart + 0.01, safeEnd - 0.02))
+      voiceGain.gain.exponentialRampToValueAtTime(0.0001, safeEnd + release)
+      voiceGain.connect(this.masterGain)
+
+      if (buffer && this.timbre === 'sampled') {
+        const source = this.ctx.createBufferSource()
+        source.buffer = buffer
+        source.playbackRate.setValueAtTime(this.a4Hz / 440, actualStart)
+        source.connect(voiceGain)
+        source.start(actualStart)
+        source.stop(safeEnd + release + 0.02)
+        activeNodes = [source, voiceGain]
+        stopScheduled = () => {
+          if (!this.ctx) return
+          const t = this.ctx.currentTime
+          voiceGain.gain.cancelScheduledValues(t)
+          voiceGain.gain.setValueAtTime(Math.max(voiceGain.gain.value, 0.0001), t)
+          voiceGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04)
+          try {
+            source.stop(t + 0.05)
+          } catch {
+            // already stopped
+          }
+        }
+        source.onended = () => {
+          try {
+            source.disconnect()
+            voiceGain.disconnect()
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        const freq = midiToFrequency(midi, this.a4Hz)
+        const osc = this.ctx.createOscillator()
+        osc.type = this.timbre === 'sine' ? 'sine' : 'triangle'
+        osc.frequency.setValueAtTime(freq, actualStart)
+        const filter = this.ctx.createBiquadFilter()
+        filter.type = 'lowpass'
+        filter.frequency.setValueAtTime(this.timbre === 'sine' ? 14000 : Math.min(5200, freq * 6), actualStart)
+        osc.connect(filter)
+        filter.connect(voiceGain)
+        osc.start(actualStart)
+        osc.stop(safeEnd + release + 0.02)
+        activeNodes = [osc, filter, voiceGain]
+        stopScheduled = () => {
+          if (!this.ctx) return
+          const t = this.ctx.currentTime
+          voiceGain.gain.cancelScheduledValues(t)
+          voiceGain.gain.setValueAtTime(Math.max(voiceGain.gain.value, 0.0001), t)
+          voiceGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04)
+          try {
+            osc.stop(t + 0.05)
+          } catch {
+            // already stopped
+          }
+        }
+        osc.onended = () => {
+          try {
+            osc.disconnect()
+            filter.disconnect()
+            voiceGain.disconnect()
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
+    if (this.timbre === 'sampled') {
+      const cached = this.bufferCache.get(clampedMidi)
+      if (cached) {
+        playAtTime(cached)
+      } else {
+        void this.loadSampleBuffer(clampedMidi).then((buffer) => {
+          playAtTime(buffer)
+        })
+      }
+    } else {
+      playAtTime(null)
+    }
+
+    return {
+      cancel: () => {
+        if (cancelled) return
+        cancelled = true
+        stopScheduled?.()
+        const nodes = activeNodes
+        activeNodes = []
+        window.setTimeout(() => {
+          for (const node of nodes) {
+            try {
+              node.disconnect()
+            } catch {
+              // ignore
+            }
+          }
+        }, 80)
+      },
+    }
+  }
+
   public stopAll(): void {
     for (const voice of Array.from(this.voices.values())) {
       voice.stop(0.14)
@@ -429,11 +570,22 @@ export class PianoSynthesizer {
 
   public dispose(): void {
     this.stopAll()
-    if (this.ctx) {
-      void this.ctx.close()
-      this.ctx = null
+    if (this.masterGain) {
+      try {
+        this.masterGain.disconnect()
+      } catch {
+        // ignore
+      }
       this.masterGain = null
+    }
+    if (this.compressor) {
+      try {
+        this.compressor.disconnect()
+      } catch {
+        // ignore
+      }
       this.compressor = null
     }
+    this.ctx = null
   }
 }

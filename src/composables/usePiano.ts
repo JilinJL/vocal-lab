@@ -1,5 +1,6 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import { PianoSynthesizer, type PianoTimbre } from '../audio/pianoSynth'
+import { useSettings } from './useSettings'
 
 // Computer keyboard mapping starting at keyboardOctave (default C4 = MIDI 60)
 export const KEYBOARD_NOTE_OFFSETS: ReadonlyArray<{ key: string; label: string; offset: number }> = [
@@ -24,13 +25,14 @@ export const KEYBOARD_NOTE_OFFSETS: ReadonlyArray<{ key: string; label: string; 
 
 export function usePiano(a4Hz: Ref<number>) {
   const synth = new PianoSynthesizer()
+  const settings = useSettings()
 
   // Which octave computer keyboard shortcuts (A..;) map to (C1..C6)
   const keyboardOctave = ref(4)
-  const timbre = ref<PianoTimbre>('sampled')
-  const volume = ref(0.76)
+  const timbre = ref<PianoTimbre>(settings.timbre)
+  const volume = ref(settings.volume)
   const sustainDrone = ref(false)
-  const showKeyShortcuts = ref(true)
+  const showKeyShortcuts = ref(settings.showKeyShortcuts)
 
   const activeNotes = ref<Set<number>>(new Set())
   const referenceMidi = ref<number | null>(null)
@@ -48,6 +50,7 @@ export function usePiano(a4Hz: Ref<number>) {
     timbre,
     (t) => {
       synth.setTimbre(t)
+      settings.timbre = t
     },
     { immediate: true },
   )
@@ -56,9 +59,14 @@ export function usePiano(a4Hz: Ref<number>) {
     volume,
     (v) => {
       synth.setVolume(v)
+      settings.volume = v
     },
     { immediate: true },
   )
+
+  watch(showKeyShortcuts, (show) => {
+    settings.showKeyShortcuts = show
+  })
 
   watch(sustainDrone, (enabled) => {
     if (!enabled && sustainedMidi.value !== null) {
@@ -134,6 +142,7 @@ export function usePiano(a4Hz: Ref<number>) {
   })
 
   return {
+    synth,
     keyboardOctave,
     timbre,
     volume,

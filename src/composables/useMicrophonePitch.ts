@@ -186,6 +186,13 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
         clear()
       }
 
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      audioCtx = new AudioCtx()
+      const resumePromise =
+        audioCtx.state === 'suspended' ? audioCtx.resume() : Promise.resolve()
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
@@ -194,13 +201,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
         },
       })
 
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-      audioCtx = new AudioCtx()
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume()
-      }
+      await resumePromise
 
       mediaStream = stream
       sourceNode = audioCtx.createMediaStreamSource(stream)

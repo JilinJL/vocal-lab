@@ -38,6 +38,12 @@
   --grade-miss: #ee7863;
   --grade-miss-soft: color-mix(in oklab, #ee7863 18%, #0b0f14);
 
+  /* Rhythm Drum Layer Semantics */
+  --rhythm-kick: #ff7a59;
+  --rhythm-snare: #ffb454;
+  --rhythm-hat: #3ddc97;
+  --rhythm-fill: #6ea8fe;
+
   /* Typography */
   --font-display: 'Newsreader', 'Songti SC', Georgia, serif;
   --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
@@ -57,6 +63,7 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
@@ -81,6 +88,18 @@ select {
 
 button {
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+button:not(:disabled):not([aria-disabled='true']):not([data-midi]):active {
+  transform: scale(0.97);
+}
+
+:where(button, a, input, select, [tabindex]):focus:not(:focus-visible) {
+  outline: none;
 }
 
 :where(button, a, input, select, [tabindex]):focus-visible {

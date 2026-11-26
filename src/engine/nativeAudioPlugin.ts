@@ -36,6 +36,13 @@ export interface VocalLabAudioPlugin {
   cancelScheduled(options: { id: number }): Promise<void>
   stopAllNotes(): Promise<void>
   setSynthParams(options: { volume: number; timbre: number; a4Hz: number }): Promise<void>
+  scheduleDrum(options: {
+    sound: number
+    startTime: number
+    velocityLevel: number
+    volume?: number
+  }): Promise<void>
+  cancelScheduledDrums(): Promise<void>
   setKeepAwake(options: { enabled: boolean }): Promise<void>
   addListener(
     eventName: 'pitchFrame',

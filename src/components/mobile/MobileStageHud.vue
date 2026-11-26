@@ -5,6 +5,7 @@ import type { AppMode } from '../StudioHeader.vue'
 import type { PracticeNoteSlot, PracticeStatus } from '../../practice/types'
 import type { ImportedSong, SongNote } from '../../songs/types'
 import type { PracticePattern } from '../../composables/useSettings'
+import type { MeterId, RhythmSubView } from '../../rhythm/types'
 import { triggerHaptic } from '../../utils/haptics'
 
 interface Props {
@@ -42,6 +43,12 @@ interface Props {
   songLiveCents: number | null
   songs: ImportedSong[]
   selectedSongId: string
+  // Rhythm
+  rhythmSubView?: RhythmSubView
+  rhythmTitle?: string
+  rhythmBpm?: number
+  rhythmMeter?: MeterId
+  rhythmIsPlaying?: boolean
 }
 
 const props = defineProps<Props>()
@@ -50,6 +57,7 @@ const emit = defineEmits<{
   openSheet: []
   cyclePreset: [delta: number]
   cycleSong: [delta: number]
+  cycleRhythm: [delta: number]
 }>()
 
 const PATTERN_SHORT: Record<PracticePattern, string> = {
@@ -98,7 +106,7 @@ function onPillPointerDown(event: PointerEvent) {
   swipeConsumed = false
 }
 
-function onPillPointerUp(event: PointerEvent, kind: 'practice' | 'songs') {
+function onPillPointerUp(event: PointerEvent, kind: 'practice' | 'songs' | 'rhythm') {
   const dx = event.clientX - swipeStartX
   if (Math.abs(dx) >= 36) {
     swipeConsumed = true
@@ -106,6 +114,8 @@ function onPillPointerUp(event: PointerEvent, kind: 'practice' | 'songs') {
     const delta = dx < 0 ? 1 : -1
     if (kind === 'practice') {
       emit('cyclePreset', delta)
+    } else if (kind === 'rhythm') {
+      emit('cycleRhythm', delta)
     } else {
       emit('cycleSong', delta)
     }
@@ -220,6 +230,25 @@ function onPillClick() {
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- RHYTHM HUD -->
+    <div v-else-if="mode === 'rhythm'" class="hud-guided">
+      <button
+        type="button"
+        class="swipe-pill"
+        @pointerdown="onPillPointerDown"
+        @pointerup="onPillPointerUp($event, 'rhythm')"
+        @click="onPillClick"
+      >
+        <span class="pill-main pill-ellipsis">{{ rhythmTitle ?? '抒情慢歌' }}</span>
+        <span class="pill-sep">·</span>
+        <span class="pill-sub tabular">{{ rhythmMeter ?? '4/4' }} · {{ rhythmBpm ?? 80 }} BPM</span>
+        <span class="pill-chevron" aria-hidden="true">▾</span>
+      </button>
+      <span class="swipe-hint" aria-hidden="true">
+        {{ rhythmSubView === 'game' ? '← 滑切关卡 →' : '← 滑切节奏 →' }}
+      </span>
     </div>
 
     <!-- SONGS HUD -->

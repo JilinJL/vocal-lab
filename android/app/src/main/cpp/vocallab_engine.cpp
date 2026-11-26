@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "poly_synth.h"
+#include "drum_synth.h"
 #include "yin_detector.h"
 
 #define LOG_TAG "VocalLabAudio"
@@ -179,13 +180,23 @@ public:
         synth_.enqueue(cmd);
     }
 
+    void pushDrumCommand(const vocallab::DrumCommand& cmd) {
+        if (cmd.type == vocallab::DrumCmdType::ScheduleHit) {
+            ensureOutputStream();
+        }
+        drumSynth_.enqueue(cmd);
+    }
+
     // Oboe Output Callback (Real-Time Audio Thread)
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* stream,
                                           void* audioData,
                                           int32_t numFrames) override {
         auto* out = static_cast<float*>(audioData);
         const double blockNow = monotonicSeconds();
-        synth_.render(out, numFrames, stream->getChannelCount(), stream->getSampleRate(), blockNow);
+        const int32_t ch = stream->getChannelCount();
+        const int32_t sr = stream->getSampleRate();
+        synth_.render(out, numFrames, ch, sr, blockNow);
+        drumSynth_.renderAdd(out, numFrames, ch, sr, blockNow);
         return oboe::DataCallbackResult::Continue;
     }
 
@@ -296,6 +307,7 @@ private:
     std::thread dspThread_;
 
     vocallab::PolySynth synth_;
+    vocallab::DrumSynth drumSynth_;
 
     JavaVM* javaVm_{nullptr};
     jobject pluginRef_{nullptr};
@@ -417,6 +429,30 @@ Java_com_vocallab_app_VocalLabAudioPlugin_nativeSetSynthParams(JNIEnv* /*env*/,
     cmd.timbre = timbre;
     cmd.a4Hz = a4Hz;
     gEngine.pushSynthCommand(cmd);
+}
+
+JNIEXPORT void JNICALL
+Java_com_vocallab_app_VocalLabAudioPlugin_nativeScheduleDrum(JNIEnv* /*env*/,
+                                                             jobject /*thiz*/,
+                                                             jint sound,
+                                                             jdouble startClockSec,
+                                                             jint velocityLevel,
+                                                             jfloat volume) {
+    vocallab::DrumCommand cmd;
+    cmd.type = vocallab::DrumCmdType::ScheduleHit;
+    cmd.sound = sound;
+    cmd.startClockSec = startClockSec;
+    cmd.velocityLevel = velocityLevel;
+    cmd.volume = volume;
+    gEngine.pushDrumCommand(cmd);
+}
+
+JNIEXPORT void JNICALL
+Java_com_vocallab_app_VocalLabAudioPlugin_nativeCancelScheduledDrums(JNIEnv* /*env*/,
+                                                                     jobject /*thiz*/) {
+    vocallab::DrumCommand cmd;
+    cmd.type = vocallab::DrumCmdType::CancelAll;
+    gEngine.pushDrumCommand(cmd);
 }
 
 JNIEXPORT void JNICALL

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AppMode } from '../StudioHeader.vue'
 import type { PracticeStatus } from '../../practice/types'
+import type { RhythmGameStatus, RhythmSubView } from '../../rhythm/types'
 import { triggerHaptic } from '../../utils/haptics'
 
 interface Props {
@@ -13,6 +14,10 @@ interface Props {
   practiceStatus: PracticeStatus
   practiceMissedCount: number
   songStatus: PracticeStatus
+  rhythmSubView?: RhythmSubView
+  rhythmPlaying?: boolean
+  rhythmPulseOnly?: boolean
+  rhythmGameStatus?: RhythmGameStatus
 }
 
 const props = defineProps<Props>()
@@ -35,9 +40,13 @@ const emit = defineEmits<{
   pauseSong: []
   resumeSong: []
   stopSong: []
+  toggleRhythm: []
+  tapRhythmTempo: []
+  toggleRhythmPulseOnly: []
+  stopRhythm: []
 }>()
 
-const MODE_ORDER: AppMode[] = ['monitor', 'practice', 'songs']
+const MODE_ORDER: AppMode[] = ['monitor', 'practice', 'rhythm', 'songs']
 let navSwipeX = 0
 
 function onNavPointerDown(event: PointerEvent) {
@@ -160,6 +169,54 @@ function selectMode(next: AppMode) {
         </template>
       </template>
 
+      <!-- RHYTHM ACTIONS -->
+      <template v-else-if="mode === 'rhythm'">
+        <template v-if="rhythmSubView === 'game'">
+          <template v-if="rhythmGameStatus === 'running' || rhythmGameStatus === 'countdown'">
+            <button type="button" class="dock-icon-btn is-danger" @click="emit('stopRhythm')">
+              <span>结束本轮闯关</span>
+            </button>
+          </template>
+          <template v-else>
+            <button type="button" class="dock-icon-btn" @click="emit('openSheet')">
+              <span>选关卡</span>
+            </button>
+            <button type="button" class="dock-primary-btn" @click="emit('toggleRhythm')">
+              <span>{{ rhythmGameStatus === 'finished' ? '再挑战' : '开始闯关' }}</span>
+            </button>
+            <button type="button" class="dock-icon-btn" @click="emit('tapRhythmTempo')">
+              <span>TAP</span>
+            </button>
+          </template>
+        </template>
+        <template v-else>
+          <button type="button" class="dock-icon-btn" @click="emit('openSheet')">
+            <span>{{ rhythmSubView === 'beat' ? '练习' : '节奏库' }}</span>
+          </button>
+          <button
+            type="button"
+            class="dock-primary-btn"
+            :class="{ 'is-live': rhythmPlaying }"
+            @click="emit('toggleRhythm')"
+          >
+            <span class="live-dot" aria-hidden="true"></span>
+            <span>{{ rhythmPlaying ? '停止' : '开始' }}</span>
+          </button>
+          <button type="button" class="dock-icon-btn" @click="emit('tapRhythmTempo')">
+            <span>TAP</span>
+          </button>
+          <button
+            v-if="rhythmSubView === 'groove'"
+            type="button"
+            class="dock-icon-btn"
+            :class="{ 'is-active': rhythmPulseOnly }"
+            @click="emit('toggleRhythmPulseOnly')"
+          >
+            <span>仅拍点</span>
+          </button>
+        </template>
+      </template>
+
       <!-- SONGS ACTIONS -->
       <template v-else>
         <template v-if="songStatus === 'idle'">
@@ -246,7 +303,32 @@ function selectMode(next: AppMode) {
           <rect x="7.75" y="8.2" width="4.5" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.6" />
           <rect x="12.5" y="4" width="4.5" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.6" />
         </svg>
-        <span>练习</span>
+        <span>音准</span>
+      </button>
+
+      <button
+        type="button"
+        class="tab-item"
+        :class="{ 'is-active': mode === 'rhythm' }"
+        :aria-current="mode === 'rhythm' ? 'page' : undefined"
+        @click="selectMode('rhythm')"
+      >
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path
+            d="M4.5 16.5L8.2 4.5h3.6l3.7 12H4.5z"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M10 13.5L13.8 7.5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          />
+          <circle cx="10" cy="13.5" r="1.4" fill="currentColor" />
+        </svg>
+        <span>节奏</span>
       </button>
 
       <button
@@ -351,7 +433,7 @@ function selectMode(next: AppMode) {
 
 .tab-bar {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid var(--border-hairline);
   background-color: var(--surface-chassis);
   touch-action: pan-y;

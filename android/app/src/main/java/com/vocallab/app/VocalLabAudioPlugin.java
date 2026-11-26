@@ -45,6 +45,8 @@ public class VocalLabAudioPlugin extends Plugin {
     private native void nativeCancelScheduled(int id);
     private native void nativeStopAllNotes();
     private native void nativeSetSynthParams(float volume, int timbre, double a4Hz);
+    private native void nativeScheduleDrum(int sound, double startClockSec, int velocityLevel, float volume);
+    private native void nativeCancelScheduledDrums();
     private native void nativeRelease();
 
     @Override
@@ -197,10 +199,27 @@ public class VocalLabAudioPlugin extends Plugin {
 
     @PluginMethod
     public void setSynthParams(PluginCall call) {
-        double volume = call.getDouble("volume", 0.76);
+        double volume = call.getDouble("volume", 0.88);
         int timbre = call.getInt("timbre", 0);
         double a4Hz = call.getDouble("a4Hz", 440.0);
         nativeSetSynthParams((float) volume, timbre, a4Hz);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void scheduleDrum(PluginCall call) {
+        ensureMediaAudioMode();
+        int sound = call.getInt("sound", 0);
+        double startTime = call.getDouble("startTime", nativeGetClockTime());
+        int velocityLevel = call.getInt("velocityLevel", 1);
+        double volume = call.getDouble("volume", 0.92);
+        nativeScheduleDrum(sound, startTime, velocityLevel, (float) volume);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void cancelScheduledDrums(PluginCall call) {
+        nativeCancelScheduledDrums();
         call.resolve();
     }
 

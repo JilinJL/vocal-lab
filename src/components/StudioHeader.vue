@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
 import { useToolbarFocusgroup } from '../composables/useToolbarFocusgroup'
 
-export type AppMode = 'monitor' | 'practice' | 'songs'
+export type AppMode = 'monitor' | 'practice' | 'rhythm' | 'songs'
 
 interface Props {
   mode: AppMode
@@ -35,6 +35,7 @@ const windowOptions = [6, 12, 24] as const
 const modeOptions: ReadonlyArray<{ id: AppMode; label: string }> = [
   { id: 'monitor', label: '自由监测' },
   { id: 'practice', label: '音准练习' },
+  { id: 'rhythm', label: '节奏训练' },
   { id: 'songs', label: '歌曲跟练' },
 ]
 

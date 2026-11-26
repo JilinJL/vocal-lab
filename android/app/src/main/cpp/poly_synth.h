@@ -113,7 +113,7 @@ public:
             }
 
             // Master volume & gentle soft clipper
-            const float scaled = std::tanh(mix * volume_ * 0.42f);
+            const float scaled = std::tanh(mix * volume_ * 1.32f) * 0.94f;
             if (channels == 2) {
                 output[i * 2] = scaled;
                 output[i * 2 + 1] = scaled;
@@ -332,7 +332,7 @@ private:
             } else if (v.sustain) {
                 env = 0.72f + 0.28f * std::exp(-static_cast<float>(v.ageSec - attackSec) * 2.2f);
             } else {
-                const float decayRate = v.timbre == 0 ? 1.45f : (v.timbre == 1 ? 1.15f : 0.9f);
+                const float decayRate = v.timbre == 0 ? 1.12f : (v.timbre == 1 ? 0.96f : 0.85f);
                 env = std::exp(-static_cast<float>(v.ageSec - attackSec) * decayRate);
                 if (env < 0.0015f) {
                     v.active = false;
@@ -360,11 +360,11 @@ private:
             const float hiDecay = std::exp(-static_cast<float>(v.ageSec) * 3.8f);
             const float hammer = std::exp(-static_cast<float>(v.ageSec) * 28.0f);
             const float pitchFactor = std::max(0.25f, std::min(1.0f, (88.0f - static_cast<float>(v.midi)) / 44.0f));
-            wave = 0.62f * static_cast<float>(std::sin(p))
-                   + 0.24f * (0.45f + 0.55f * hiDecay) * static_cast<float>(std::sin(2.0 * p))
-                   + 0.12f * hiDecay * pitchFactor * static_cast<float>(std::sin(3.0 * p))
-                   + 0.07f * hiDecay * pitchFactor * static_cast<float>(std::sin(4.0 * p))
-                   + 0.04f * hammer * pitchFactor * static_cast<float>(std::sin(5.0 * p))
+            wave = 0.72f * static_cast<float>(std::sin(p))
+                   + 0.28f * (0.52f + 0.48f * hiDecay) * static_cast<float>(std::sin(2.0 * p))
+                   + 0.15f * hiDecay * pitchFactor * static_cast<float>(std::sin(3.0 * p))
+                   + 0.08f * hiDecay * pitchFactor * static_cast<float>(std::sin(4.0 * p))
+                   + 0.05f * hammer * pitchFactor * static_cast<float>(std::sin(5.0 * p))
                    + 0.03f * hammer * pitchFactor * static_cast<float>(std::sin(6.0 * p));
         }
 
@@ -374,7 +374,7 @@ private:
     std::array<Voice, kMaxVoices> voices_{};
     std::array<ScheduledNote, kMaxScheduled> scheduled_{};
     LockFreeCmdQueue<256> queue_{};
-    float volume_{0.76f};
+    float volume_{0.88f};
     int32_t defaultTimbre_{0};
     double a4Hz_{440.0};
 };

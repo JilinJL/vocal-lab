@@ -8,6 +8,7 @@ import { setNativeKeepAwake, syncNativeClock } from './engine/nativeAudioPlugin'
 import { useMicrophonePitch } from './composables/useMicrophonePitch'
 import { usePiano } from './composables/usePiano'
 import { usePracticeSession } from './composables/usePracticeSession'
+import { useRhythmSession } from './composables/useRhythmSession'
 import { useSettings } from './composables/useSettings'
 import { useSongPractice } from './composables/useSongPractice'
 import StudioHeader, { type AppMode } from './components/StudioHeader.vue'
@@ -15,6 +16,8 @@ import LivePitchMonitor from './components/LivePitchMonitor.vue'
 import PitchCurveCanvas from './components/PitchCurveCanvas.vue'
 import ConcertPiano from './components/ConcertPiano.vue'
 import PracticePanel from './components/practice/PracticePanel.vue'
+import RhythmStage from './components/rhythm/RhythmStage.vue'
+import RhythmLibraryPanel from './components/rhythm/RhythmLibraryPanel.vue'
 import SongPanel from './components/songs/SongPanel.vue'
 import BottomSheet from './components/ui/BottomSheet.vue'
 import MobileStageHud from './components/mobile/MobileStageHud.vue'
@@ -41,6 +44,7 @@ const PRACTICE_PRESETS = [
 function readModeFromHash(): AppMode {
   const hash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase()
   if (hash === 'practice') return 'practice'
+  if (hash === 'rhythm') return 'rhythm'
   if (hash === 'songs') return 'songs'
   return 'monitor'
 }
@@ -64,6 +68,7 @@ const songPractice = useSongPractice({
   synth: piano.synth,
   a4Hz,
 })
+const rhythm = useRhythmSession()
 
 watch(
   mode,
@@ -75,8 +80,14 @@ watch(
     if (prevMode === 'practice' && nextMode !== 'practice') {
       practice.stop()
     }
+    if (prevMode === 'rhythm' && nextMode !== 'rhythm') {
+      rhythm.stopAll()
+    }
     if (prevMode === 'songs' && nextMode !== 'songs') {
       songPractice.stop()
+    }
+    if (nextMode === 'rhythm' && mic.isListening.value) {
+      mic.stop()
     }
 
     const targetHash = nextMode === 'monitor' ? '' : `#/${nextMode}`
@@ -111,7 +122,8 @@ watch(
     practice.status.value === 'running' ||
     practice.status.value === 'countdown' ||
     songPractice.status.value === 'running' ||
-    songPractice.status.value === 'countdown',
+    songPractice.status.value === 'countdown' ||
+    rhythm.isActive.value,
   (active) => {
     setNativeKeepAwake(active)
   },
@@ -330,9 +342,43 @@ function handleToggleMobilePiano() {
   mobilePianoOpen.value = !mobilePianoOpen.value
 }
 
+function handleSelectRhythmPreset(kind: 'basic' | 'groove' | 'challenge', id: string) {
+  if (kind === 'basic') rhythm.selectBasicPreset(id)
+  else if (kind === 'groove') rhythm.loadGroove(id)
+  else rhythm.selectChallenge(id)
+  if (isMobile.value) {
+    mobileSheetOpen.value = false
+  }
+}
+
+function handleBoostBpmAndReplay() {
+  rhythm.stepBpm(5)
+  void rhythm.startGame()
+}
+
+function handleOpenRhythmLibrary() {
+  if (isMobile.value) {
+    mobileSheetOpen.value = true
+  } else {
+    rhythm.stopAll()
+    rhythm.gameStatus.value = 'idle'
+  }
+}
+
+const mobileRhythmTitle = computed(() => {
+  if (rhythm.subView.value === 'beat') return rhythm.activeBasicPreset.value.name
+  if (rhythm.subView.value === 'game') return rhythm.activeChallenge.value.name
+  return rhythm.activeGroove.value.name
+})
+
 const mobileSheetTitle = computed(() => {
   if (mode.value === 'practice') {
     return practice.status.value === 'finished' ? '练习成绩' : '音准练习设置'
+  }
+  if (mode.value === 'rhythm') {
+    if (rhythm.subView.value === 'beat') return '基础节拍练习'
+    if (rhythm.subView.value === 'game') return '节奏闯关关卡与设置'
+    return '经典节奏库与律动设置'
   }
   if (mode.value === 'songs') {
     return songPractice.status.value === 'finished' ? '跟唱成绩' : '曲库与跟唱设置'
@@ -392,15 +438,92 @@ const mobileSheetTitle = computed(() => {
       :song-live-cents="songPractice.liveCents.value"
       :songs="songPractice.songs.value"
       :selected-song-id="songPractice.selectedSong.value.id"
+      :rhythm-sub-view="rhythm.subView.value"
+      :rhythm-title="mobileRhythmTitle"
+      :rhythm-bpm="rhythm.bpm.value"
+      :rhythm-meter="rhythm.activeMeter.value"
+      :rhythm-is-playing="rhythm.isPlaying.value"
       @open-sheet="mobileSheetOpen = true"
       @cycle-preset="handleCyclePreset"
       @cycle-song="handleCycleSong"
+      @cycle-rhythm="rhythm.cycleActivePreset"
     />
 
     <main class="studio-workspace">
-      <template v-if="!isMobile">
-        <LivePitchMonitor
-          v-if="mode === 'monitor'"
+      <template v-if="mode === 'rhythm'">
+        <RhythmLibraryPanel
+          v-if="!isMobile"
+          class="workspace-sidebar studio-scroll"
+          :sub-view="rhythm.subView.value"
+          :active-basic-preset-id="rhythm.activeBasicPresetId.value"
+          v-model:active-category="rhythm.activeCategory.value"
+          :active-groove-id="rhythm.activeGrooveId.value"
+          :groove-meter="rhythm.grooveMeter.value"
+          v-model:swing="rhythm.swing.value"
+          :selected-challenge-id="rhythm.selectedChallengeId.value"
+          v-model:game-target-mode="rhythm.gameTargetMode.value"
+          v-model:game-bars="rhythm.gameBars.value"
+          v-model:game-blind-bars="rhythm.gameBlindBars.value"
+          :history="rhythm.gameHistory.value"
+          @select-basic-preset="rhythm.selectBasicPreset($event)"
+          @select-groove="rhythm.loadGroove($event)"
+          @update:groove-meter="rhythm.setGrooveMeter($event)"
+          @select-challenge="rhythm.selectChallenge($event)"
+          @clear-history="rhythm.clearHistory()"
+        />
+
+        <RhythmStage
+          :is-mobile="isMobile"
+          :sub-view="rhythm.subView.value"
+          :bpm="rhythm.bpm.value"
+          v-model:pulse-only="rhythm.pulseOnly.value"
+          :swing="rhythm.swing.value"
+          :basic-meter="rhythm.basicMeter.value"
+          :basic-sub="rhythm.basicSub.value"
+          :active-basic-preset="rhythm.activeBasicPreset.value"
+          :groove-meter="rhythm.grooveMeter.value"
+          :active-groove="rhythm.activeGroove.value"
+          :active-meter-spec="rhythm.activeMeterSpec.value"
+          :pattern="rhythm.pattern"
+          :groove-stats="rhythm.grooveStats.value"
+          :is-playing="rhythm.isPlaying.value"
+          :current-step="rhythm.currentStep.value"
+          :current-beat="rhythm.currentBeat.value"
+          :current-sub-pos="rhythm.currentSubPos.value"
+          :current-bar="rhythm.currentBar.value"
+          :active-challenge="rhythm.activeChallenge.value"
+          :game-target-mode="rhythm.gameTargetMode.value"
+          :game-bars="rhythm.gameBars.value"
+          :game-blind-bars="rhythm.gameBlindBars.value"
+          :game-status="rhythm.gameStatus.value"
+          :game-countdown="rhythm.gameCountdown.value"
+          :game-targets="rhythm.gameTargets.value"
+          :game-combo="rhythm.gameCombo.value"
+          :game-popup="rhythm.gamePopup.value"
+          :game-playhead-sec="rhythm.gamePlayheadSec.value"
+          :game-in-blind-bar="rhythm.gameInBlindBar.value"
+          :game-summary="rhythm.gameSummary.value"
+          :last-tap-flash-at="rhythm.lastTapFlashAt.value"
+          @update:sub-view="rhythm.setSubView($event)"
+          @update:bpm="rhythm.setBpm($event)"
+          @update:basic-meter="rhythm.setBasicMeter($event)"
+          @update:basic-sub="rhythm.setBasicSub($event)"
+          @step-bpm="rhythm.stepBpm($event)"
+          @tap-tempo="rhythm.tapTempo()"
+          @toggle-play="rhythm.togglePlayback()"
+          @cycle-cell="rhythm.cycleCell"
+          @start-game="rhythm.startGame()"
+          @stop-all="rhythm.stopAll()"
+          @game-tap="rhythm.registerGameTap()"
+          @open-library="handleOpenRhythmLibrary"
+          @boost-bpm-and-replay="handleBoostBpmAndReplay"
+        />
+      </template>
+
+      <template v-else>
+        <template v-if="!isMobile">
+          <LivePitchMonitor
+            v-if="mode === 'monitor'"
           class="workspace-monitor"
           :is-listening="mic.isListening.value"
           :is-demo="mic.isDemo.value"
@@ -480,8 +603,8 @@ const mobileSheetTitle = computed(() => {
         />
       </template>
 
-      <PitchCurveCanvas
-        class="workspace-canvas"
+        <PitchCurveCanvas
+          class="workspace-canvas"
         :samples="canvasSamples"
         :sample-version="canvasSampleVersion"
         :is-listening="mic.isListening.value"
@@ -500,13 +623,14 @@ const mobileSheetTitle = computed(() => {
         @hover="hoveredPoint = $event"
         @start-mic="handleStartMic"
         @load-demo="handleLoadDemo"
-        @audition-midi="handleAuditionMidi"
-      />
+          @audition-midi="handleAuditionMidi"
+        />
+      </template>
     </main>
 
     <!-- Desktop docked 88-key Concert Piano -->
     <ConcertPiano
-      v-if="!isMobile"
+      v-if="!isMobile && mode !== 'rhythm'"
       :keyboard-octave="piano.keyboardOctave.value"
       v-model:timbre="piano.timbre.value"
       v-model:volume="piano.volume.value"
@@ -536,6 +660,10 @@ const mobileSheetTitle = computed(() => {
       :practice-status="practice.status.value"
       :practice-missed-count="practice.summary.value.missedMidis.length"
       :song-status="songPractice.status.value"
+      :rhythm-sub-view="rhythm.subView.value"
+      :rhythm-playing="rhythm.isPlaying.value"
+      :rhythm-pulse-only="rhythm.pulseOnly.value"
+      :rhythm-game-status="rhythm.gameStatus.value"
       @toggle-listen="handleToggleListen"
       @clear-monitor="handleClear"
       @load-demo="handleLoadDemo"
@@ -552,6 +680,10 @@ const mobileSheetTitle = computed(() => {
       @pause-song="songPractice.pause()"
       @resume-song="songPractice.resume()"
       @stop-song="songPractice.stop()"
+      @toggle-rhythm="rhythm.togglePlayback()"
+      @tap-rhythm-tempo="rhythm.tapTempo()"
+      @toggle-rhythm-pulse-only="rhythm.pulseOnly.value = !rhythm.pulseOnly.value"
+      @stop-rhythm="rhythm.stopAll()"
     />
 
     <!-- Mobile swipeable Config / Song Library / Results Bottom Sheet -->
@@ -586,6 +718,26 @@ const mobileSheetTitle = computed(() => {
         @stop="practice.stop()"
         @audition-midi="practice.auditionNote($event)"
         @clear-history="practice.clearHistory()"
+      />
+      <RhythmLibraryPanel
+        v-else-if="mode === 'rhythm'"
+        class="sheet-embedded-panel"
+        :sub-view="rhythm.subView.value"
+        :active-basic-preset-id="rhythm.activeBasicPresetId.value"
+        v-model:active-category="rhythm.activeCategory.value"
+        :active-groove-id="rhythm.activeGrooveId.value"
+        :groove-meter="rhythm.grooveMeter.value"
+        v-model:swing="rhythm.swing.value"
+        :selected-challenge-id="rhythm.selectedChallengeId.value"
+        v-model:game-target-mode="rhythm.gameTargetMode.value"
+        v-model:game-bars="rhythm.gameBars.value"
+        v-model:game-blind-bars="rhythm.gameBlindBars.value"
+        :history="rhythm.gameHistory.value"
+        @select-basic-preset="handleSelectRhythmPreset('basic', $event)"
+        @select-groove="handleSelectRhythmPreset('groove', $event)"
+        @update:groove-meter="rhythm.setGrooveMeter($event)"
+        @select-challenge="handleSelectRhythmPreset('challenge', $event)"
+        @clear-history="rhythm.clearHistory()"
       />
       <SongPanel
         v-else-if="mode === 'songs'"

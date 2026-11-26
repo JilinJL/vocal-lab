@@ -39,7 +39,7 @@ const DEFAULT_SETTINGS: VocalLabSettings = {
   windowSeconds: 12,
   autoFollow: true,
   timbre: 'sampled',
-  volume: 0.76,
+  volume: 0.88,
   showKeyShortcuts: true,
   practiceRangeMin: 57, // A3
   practiceRangeMax: 64, // E4

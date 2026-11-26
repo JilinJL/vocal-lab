@@ -47,23 +47,27 @@ export class PianoSynthesizer {
   private loadingPromises = new Map<number, Promise<AudioBuffer | null>>()
   private preloadedCore = false
 
-  private volume = 0.72
+  private volume = 0.88
   private timbre: PianoTimbre = 'sampled'
   private a4Hz = 440
+
+  private computeMasterGain(): number {
+    return this.volume * 1.75
+  }
 
   private ensureContext(): AudioContext {
     const shared = getSharedAudioContext()
     if (this.ctx !== shared || !this.masterGain || !this.compressor) {
       this.ctx = shared
       this.compressor = this.ctx.createDynamicsCompressor()
-      this.compressor.threshold.value = -14
-      this.compressor.knee.value = 18
-      this.compressor.ratio.value = 3.5
-      this.compressor.attack.value = 0.003
-      this.compressor.release.value = 0.18
+      this.compressor.threshold.value = -9
+      this.compressor.knee.value = 12
+      this.compressor.ratio.value = 4
+      this.compressor.attack.value = 0.002
+      this.compressor.release.value = 0.14
 
       this.masterGain = this.ctx.createGain()
-      this.masterGain.gain.value = this.volume
+      this.masterGain.gain.value = this.computeMasterGain()
 
       this.masterGain.connect(this.compressor)
       this.compressor.connect(this.ctx.destination)
@@ -136,7 +140,7 @@ export class PianoSynthesizer {
       return
     }
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02)
+      this.masterGain.gain.setTargetAtTime(this.computeMasterGain(), this.ctx.currentTime, 0.02)
     }
   }
 
@@ -244,7 +248,7 @@ export class PianoSynthesizer {
 
     const voiceGain = ctx.createGain()
     voiceGain.gain.setValueAtTime(0.001, now)
-    voiceGain.gain.linearRampToValueAtTime(0.95 * velocity, now + 0.004)
+    voiceGain.gain.linearRampToValueAtTime(1.18 * velocity, now + 0.004)
 
     source.connect(voiceGain)
     voiceGain.connect(this.masterGain)
@@ -361,9 +365,9 @@ export class PianoSynthesizer {
       oscillators.push(osc)
 
       voiceGain.gain.setValueAtTime(0.0001, now)
-      voiceGain.gain.linearRampToValueAtTime(0.38 * velocity, now + 0.015)
+      voiceGain.gain.linearRampToValueAtTime(0.58 * velocity, now + 0.015)
       if (!sustain) {
-        voiceGain.gain.exponentialRampToValueAtTime(0.24 * velocity, now + 0.4)
+        voiceGain.gain.exponentialRampToValueAtTime(0.38 * velocity, now + 0.4)
         voiceGain.gain.exponentialRampToValueAtTime(0.0008, now + 3.2)
       }
     } else {
@@ -396,11 +400,11 @@ export class PianoSynthesizer {
       }
 
       voiceGain.gain.setValueAtTime(0.0001, now)
-      voiceGain.gain.linearRampToValueAtTime(0.36 * velocity, now + 0.008)
+      voiceGain.gain.linearRampToValueAtTime(0.62 * velocity, now + 0.008)
       if (sustain) {
-        voiceGain.gain.exponentialRampToValueAtTime(0.22 * velocity, now + 0.6)
+        voiceGain.gain.exponentialRampToValueAtTime(0.38 * velocity, now + 0.6)
       } else {
-        voiceGain.gain.exponentialRampToValueAtTime(0.18 * velocity, now + 0.5)
+        voiceGain.gain.exponentialRampToValueAtTime(0.32 * velocity, now + 0.5)
         voiceGain.gain.exponentialRampToValueAtTime(0.0006, now + 3.8)
       }
     }
@@ -523,10 +527,10 @@ export class PianoSynthesizer {
       const voiceGain = this.ctx.createGain()
       voiceGain.gain.setValueAtTime(0.0001, actualStart)
       voiceGain.gain.linearRampToValueAtTime(
-        (buffer ? 0.92 : 0.34) * velocity,
+        (buffer ? 1.15 : 0.58) * velocity,
         actualStart + 0.008,
       )
-      voiceGain.gain.setValueAtTime((buffer ? 0.88 : 0.28) * velocity, Math.max(actualStart + 0.01, safeEnd - 0.02))
+      voiceGain.gain.setValueAtTime((buffer ? 1.08 : 0.46) * velocity, Math.max(actualStart + 0.01, safeEnd - 0.02))
       voiceGain.gain.exponentialRampToValueAtTime(0.0001, safeEnd + release)
       voiceGain.connect(this.masterGain)
 

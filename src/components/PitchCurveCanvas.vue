@@ -57,6 +57,7 @@ const AXIS_WIDTH = 58
 const TOP_PAD = 16
 const BOTTOM_PAD = 28
 const RIGHT_PAD = 18
+const LIVE_HEAD_RATIO = 0.68 // Keep live curve tip comfortably middle-right with breathing room
 
 // Viewport pitch range in MIDI units (pinch-zoomable 12..36 semitones)
 const DEFAULT_VISIBLE_SEMITONES = 24
@@ -118,10 +119,16 @@ function getTimeBounds(): { startTime: number; endTime: number } {
     const startTime = Math.max(0, ph - span * 0.36)
     return { startTime, endTime: startTime + span }
   }
+  const span = props.windowSeconds
   const maxT = maxRecordedTime.value
-  const endTime = Math.max(props.windowSeconds, maxT - timeOffset.value)
-  const startTime = endTime - props.windowSeconds
-  return { startTime, endTime }
+  if (props.isDemo) {
+    const endTime = Math.max(span, maxT - timeOffset.value)
+    return { startTime: endTime - span, endTime }
+  }
+  const liveAnchor = span * LIVE_HEAD_RATIO
+  const liveStart = Math.max(0, maxT - liveAnchor)
+  const startTime = Math.max(0, liveStart - timeOffset.value)
+  return { startTime, endTime: startTime + span }
 }
 
 function getMidiBounds(): { minMidi: number; maxMidi: number } {
@@ -233,7 +240,12 @@ function getPinchDistance(): number {
 }
 
 function clampTimeOffset(val: number): number {
-  const maxPan = Math.max(0, maxRecordedTime.value - props.windowSeconds)
+  if (props.isDemo) {
+    const maxPan = Math.max(0, maxRecordedTime.value - props.windowSeconds)
+    return Math.max(0, Math.min(maxPan, val))
+  }
+  const liveAnchor = props.windowSeconds * LIVE_HEAD_RATIO
+  const maxPan = Math.max(0, maxRecordedTime.value - liveAnchor)
   return Math.max(0, Math.min(maxPan, val))
 }
 
@@ -258,13 +270,24 @@ watch(
 watch(
   () => props.sampleVersion,
   () => {
-    // Auto-follow vertical center gently when singing live
-    if (props.autoFollow && props.isListening && props.samples.length > 0) {
-      const latest = props.samples[props.samples.length - 1]!
-      if (latest.midi !== null) {
-        const margin = visibleSemitones.value * 0.28
-        if (Math.abs(latest.midi - targetCenterMidi.value) > margin) {
-          targetCenterMidi.value = clampCenterMidi(latest.midi)
+    // Auto-follow vertical center calmly using a short recent median (immune to single-frame spikes)
+    if (props.autoFollow && props.isListening && !props.guidedMode && props.samples.length > 0) {
+      const list = props.samples
+      const latestTime = list[list.length - 1]!.time
+      const recentVoiced: number[] = []
+      for (let i = list.length - 1; i >= 0 && recentVoiced.length < 10; i--) {
+        const sample = list[i]!
+        if (latestTime - sample.time > 0.45) break
+        if (sample.midi !== null) {
+          recentVoiced.push(sample.midi)
+        }
+      }
+      if (recentVoiced.length >= 4) {
+        recentVoiced.sort((a, b) => a - b)
+        const medianMidi = recentVoiced[recentVoiced.length >> 1]!
+        const margin = visibleSemitones.value * 0.34
+        if (Math.abs(medianMidi - targetCenterMidi.value) > margin) {
+          targetCenterMidi.value = clampCenterMidi(medianMidi)
         }
       }
     }
@@ -631,7 +654,7 @@ function renderCanvas() {
   // Smooth vertical auto-follow easing
   const diff = targetCenterMidi.value - centerMidi.value
   if (Math.abs(diff) > 0.02) {
-    centerMidi.value += diff * 0.14
+    centerMidi.value += diff * 0.085
     scheduleDraw()
   } else {
     centerMidi.value = targetCenterMidi.value
@@ -840,25 +863,38 @@ function renderCanvas() {
     type Pt = { x: number; y: number; midi: number; time: number }
     const phrases: Pt[][] = []
     let currentPhrase: Pt[] = []
-    let prevSample: PitchSample | null = null
+    let lastVoicedSample: PitchSample | null = null
+    let hadNullSinceLastVoiced = false
 
     for (let i = Math.max(0, startIdx - 1); i < list.length; i++) {
       const s = list[i]!
       if (s.time > endTime + 0.3) break
 
       if (s.midi === null) {
-        if (currentPhrase.length > 0) {
+        hadNullSinceLastVoiced = true
+        if (
+          currentPhrase.length > 0 &&
+          lastVoicedSample !== null &&
+          s.time - lastVoicedSample.time > 0.12
+        ) {
           phrases.push(currentPhrase)
           currentPhrase = []
+          lastVoicedSample = null
         }
-        prevSample = s
         continue
       }
 
+      const timeGap = lastVoicedSample !== null ? s.time - lastVoicedSample.time : 0
+      const pitchGap =
+        lastVoicedSample !== null && lastVoicedSample.midi !== null
+          ? Math.abs(s.midi - lastVoicedSample.midi)
+          : 0
+
       const broken =
-        prevSample !== null &&
-        prevSample.midi !== null &&
-        (s.time - prevSample.time > 0.18 || Math.abs(s.midi - prevSample.midi) > 9)
+        lastVoicedSample !== null &&
+        (timeGap > 0.16 ||
+          pitchGap > 6.5 ||
+          (hadNullSinceLastVoiced && (timeGap > 0.11 || pitchGap > 2.4)))
 
       if (broken && currentPhrase.length > 0) {
         phrases.push(currentPhrase)
@@ -868,7 +904,8 @@ function renderCanvas() {
       const x = timeToX(s.time, startTime, endTime)
       const y = midiToY(s.midi, minMidi, maxMidi)
       currentPhrase.push({ x, y, midi: s.midi, time: s.time })
-      prevSample = s
+      lastVoicedSample = s
+      hadNullSinceLastVoiced = false
     }
 
     if (currentPhrase.length > 0) {
@@ -911,9 +948,34 @@ function renderCanvas() {
       ctx.stroke()
     }
 
+    // Subtle live playhead guide line in monitor mode so the middle-right "now" position is unmistakable
+    if (!props.guidedMode && props.isListening && timeOffset.value < 0.1) {
+      const nowX = timeToX(maxRecordedTime.value, startTime, endTime)
+      if (nowX >= AXIS_WIDTH && nowX <= AXIS_WIDTH + plotW) {
+        ctx.save()
+        ctx.setLineDash([4, 5])
+        ctx.strokeStyle = 'rgba(79, 209, 165, 0.28)'
+        ctx.lineWidth = 1.2
+        ctx.beginPath()
+        ctx.moveTo(nowX, TOP_PAD)
+        ctx.lineTo(nowX, TOP_PAD + plotH)
+        ctx.stroke()
+        ctx.restore()
+      }
+    }
+
     // Live playhead beacon on the latest voiced point
-    if (props.isListening && timeOffset.value < 0.1) {
-      const tail = list[list.length - 1]
+    if (props.isListening && (props.guidedMode || timeOffset.value < 0.1)) {
+      const refNow = props.guidedMode ? (props.playheadTime ?? maxRecordedTime.value) : maxRecordedTime.value
+      let tail: PitchSample | null = null
+      for (let i = list.length - 1; i >= 0; i--) {
+        const candidate = list[i]!
+        if (refNow - candidate.time > 0.16) break
+        if (candidate.midi !== null) {
+          tail = candidate
+          break
+        }
+      }
       if (tail && tail.midi !== null) {
         const lx = timeToX(tail.time, startTime, endTime)
         const ly = midiToY(tail.midi, minMidi, maxMidi)
@@ -930,6 +992,44 @@ function renderCanvas() {
         ctx.lineWidth = 2
         ctx.strokeStyle = TRACE_COLOR
         ctx.stroke()
+
+        // Floating compact note badge to the right of live beacon in monitor mode
+        if (!props.guidedMode) {
+          const liveInfo = describePitchFromMidi(
+            tail.midi,
+            props.a4Hz,
+            tail.frequency ?? undefined,
+          )
+          const badgeText = `${liveInfo.fullName} ${formatCents(liveInfo.cents)}`
+          ctx.save()
+          ctx.font = '600 11px "Plus Jakarta Sans", -apple-system, sans-serif'
+          const tw = ctx.measureText(badgeText).width
+          const pillW = tw + 14
+          const pillH = 22
+          const preferRightX = lx + 12
+          const pillX =
+            preferRightX + pillW <= AXIS_WIDTH + plotW - 4
+              ? preferRightX
+              : Math.max(AXIS_WIDTH + 6, lx - pillW - 12)
+          const pillY = Math.max(TOP_PAD + 4, Math.min(TOP_PAD + plotH - pillH - 4, ly - pillH / 2))
+
+          ctx.fillStyle = 'rgba(17, 23, 30, 0.90)'
+          ctx.strokeStyle =
+            Math.abs(liveInfo.cents) <= 15
+              ? 'rgba(79, 209, 165, 0.85)'
+              : 'rgba(228, 182, 83, 0.78)'
+          ctx.lineWidth = 1.1
+          ctx.beginPath()
+          ctx.roundRect(pillX, pillY, pillW, pillH, 6)
+          ctx.fill()
+          ctx.stroke()
+
+          ctx.fillStyle = '#F2EDE4'
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(badgeText, pillX + 7, pillY + pillH / 2 + 0.5)
+          ctx.restore()
+        }
       }
     }
   }

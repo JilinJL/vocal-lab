@@ -38,9 +38,17 @@ const STRICTNESS_MULTIPLIER: Record<PracticeStrictness, number> = {
   strict: 0.7,
 }
 
-const MIN_CLARITY = 0.78
+const MIN_CLARITY = 0.52
 const MAX_FRAME_DT = 0.08
 const DEFAULT_FRAME_DT = 0.025
+const OUTLIER_CENTS_LIMIT = 120
+
+function medianOf(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = sorted.length >> 1
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) * 0.5
+}
 
 export function computeCentsError(
   frequency: number,
@@ -67,7 +75,7 @@ export function gradeNote(
   const onsetGrace =
     window.onsetGraceSec !== undefined
       ? Math.max(0, Math.min(rawDuration * 0.4, window.onsetGraceSec))
-      : Math.min(0.15, rawDuration * 0.25)
+      : Math.min(0.22, rawDuration * 0.28)
 
   const evalStart = window.start + onsetGrace
   const evalEnd = window.end
@@ -119,10 +127,7 @@ export function gradeNote(
   }
 
   let voicedDuration = 0
-  let weightedCentsSum = 0
-  let weightedAbsCentsSum = 0
-  let weightedOctaveSum = 0
-  const voicedSamples: Array<{ cents: number; weight: number }> = []
+  const voicedSamples: Array<{ cents: number; octaveOffset: number; weight: number }> = []
 
   for (let i = 0; i < aligned.length; i++) {
     const curr = aligned[i]!
@@ -137,14 +142,10 @@ export function gradeNote(
         options.allowOctaveTolerance,
       )
       voicedDuration += dt
-      weightedCentsSum += cents * dt
-      weightedAbsCentsSum += Math.abs(cents) * dt
-      weightedOctaveSum += octaveOffset * dt
-      voicedSamples.push({ cents, weight: dt })
+      voicedSamples.push({ cents, octaveOffset, weight: dt })
     }
   }
 
-  const voicedRatio = Math.min(1, voicedDuration / evalDuration)
   if (voicedDuration <= 0 || voicedSamples.length === 0) {
     return {
       noteId: window.noteId,
@@ -159,25 +160,48 @@ export function gradeNote(
     }
   }
 
-  const meanCents = weightedCentsSum / voicedDuration
-  const meanAbsCents = weightedAbsCentsSum / voicedDuration
-  const octaveOffset = Math.round(weightedOctaveSum / voicedDuration)
+  // Reject isolated transient onset/consonant/octave outliers so brief glitches don't ruin steady notes
+  let activeSamples = voicedSamples
+  let activeDuration = voicedDuration
+  if (voicedSamples.length >= 5) {
+    const medCents = medianOf(voicedSamples.map((s) => s.cents))
+    const inliers = voicedSamples.filter((s) => Math.abs(s.cents - medCents) <= OUTLIER_CENTS_LIMIT)
+    const inlierDuration = inliers.reduce((acc, s) => acc + s.weight, 0)
+    if (inliers.length >= 3 && inlierDuration >= voicedDuration * 0.65) {
+      activeSamples = inliers
+      activeDuration = inlierDuration
+    }
+  }
+
+  const voicedRatio = Math.min(1, activeDuration / evalDuration)
+  let weightedCentsSum = 0
+  let weightedAbsCentsSum = 0
+  let weightedOctaveSum = 0
+  for (const sample of activeSamples) {
+    weightedCentsSum += sample.cents * sample.weight
+    weightedAbsCentsSum += Math.abs(sample.cents) * sample.weight
+    weightedOctaveSum += sample.octaveOffset * sample.weight
+  }
+
+  const meanCents = weightedCentsSum / activeDuration
+  const meanAbsCents = weightedAbsCentsSum / activeDuration
+  const octaveOffset = Math.round(weightedOctaveSum / activeDuration)
 
   let varianceSum = 0
-  for (const sample of voicedSamples) {
+  for (const sample of activeSamples) {
     const diff = sample.cents - meanCents
     varianceSum += diff * diff * sample.weight
   }
-  const stability = Math.sqrt(varianceSum / voicedDuration)
+  const stability = Math.sqrt(varianceSum / activeDuration)
 
   const mult = STRICTNESS_MULTIPLIER[options.strictness]
   let grade: PracticeGrade = 'miss'
 
-  if (meanAbsCents <= 10 * mult && stability <= 12 * mult && voicedRatio >= 0.6) {
+  if (meanAbsCents <= 15 * mult && stability <= 24 * mult && voicedRatio >= 0.45) {
     grade = 'perfect'
-  } else if (meanAbsCents <= 25 * mult && voicedRatio >= 0.5) {
+  } else if (meanAbsCents <= 30 * mult && voicedRatio >= 0.35) {
     grade = 'great'
-  } else if (meanAbsCents <= 50 * mult && voicedRatio >= 0.4) {
+  } else if (meanAbsCents <= 55 * mult && voicedRatio >= 0.25) {
     grade = 'good'
   }
 
@@ -201,11 +225,11 @@ export function computeProvisionalGrade(
   options: GradeOptions,
 ): PracticeGrade | null {
   const elapsed = currentTime - window.start
-  if (elapsed < 0.35) return null
+  if (elapsed < 0.26) return null
   const partialEnd = Math.min(window.end, currentTime)
-  if (partialEnd - window.start < 0.35) return null
+  if (partialEnd - window.start < 0.26) return null
   const result = gradeNote(frames, { ...window, end: partialEnd }, options)
-  if (result.voicedRatio < 0.25) return null
+  if (result.voicedRatio < 0.18) return null
   return result.grade
 }
 

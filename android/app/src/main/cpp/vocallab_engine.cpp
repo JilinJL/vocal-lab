@@ -33,8 +33,8 @@ double monotonicSeconds() {
 class VocalLabEngine : public oboe::AudioStreamDataCallback,
                        public oboe::AudioStreamErrorCallback {
 public:
-    static constexpr size_t kRingSize = 8192;
-    static constexpr size_t kWindowSize = 2048;
+    static constexpr size_t kRingSize = 16384;
+    static constexpr size_t kWindowSize = 3072;
 
     void setJavaCallback(JavaVM* vm, jobject pluginGlobalRef, jmethodID onPitchMethod) {
         std::lock_guard<std::mutex> lock(cbMutex_);
@@ -56,9 +56,10 @@ public:
         ring_.fill(0.0f);
 
         const oboe::InputPreset presets[] = {
-            oboe::InputPreset::Unprocessed,
+            oboe::InputPreset::VoicePerformance,
             oboe::InputPreset::VoiceRecognition,
             oboe::InputPreset::Generic,
+            oboe::InputPreset::Unprocessed,
         };
 
         oboe::Result result = oboe::Result::ErrorUnavailable;
@@ -246,9 +247,11 @@ private:
 
         vocallab::YinDetector detector(kWindowSize);
         std::array<float, kWindowSize> window{};
+        double prevTrackedFreq = -1.0;
+        int unvoicedStreak = 0;
 
         while (captureRunning_.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(28));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
             if (!captureRunning_.load()) break;
 
             const uint64_t totalWritten = writeCount_.load(std::memory_order_acquire);
@@ -268,7 +271,18 @@ private:
                 kWindowSize,
                 sr,
                 minHz_.load(),
-                maxHz_.load());
+                maxHz_.load(),
+                prevTrackedFreq);
+
+            if (res.frequency > 0.0 && res.clarity >= 0.58) {
+                prevTrackedFreq = res.frequency;
+                unvoicedStreak = 0;
+            } else {
+                ++unvoicedStreak;
+                if (unvoicedStreak >= 6) {
+                    prevTrackedFreq = -1.0;
+                }
+            }
 
             if (env && pluginRef_ && onPitchMethod_) {
                 env->CallVoidMethod(

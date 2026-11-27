@@ -15,25 +15,48 @@ struct PitchResult {
 
 class YinDetector {
 public:
-    explicit YinDetector(size_t maxWindowSize = 2048)
-        : diff_(maxWindowSize / 2, 0.0f) {}
+    explicit YinDetector(size_t maxWindowSize = 3072)
+        : filtered_(maxWindowSize, 0.0f), diff_(maxWindowSize / 2, 0.0f) {}
 
     PitchResult detect(const float* samples,
                        size_t count,
                        int sampleRate,
                        double minFreq = 60.0,
                        double maxFreq = 1250.0,
-                       float rmsGate = 0.008f,
-                       float threshold = 0.15f) {
+                       double prevFreq = -1.0,
+                       float rmsGate = 0.004f,
+                       float threshold = 0.16f) {
         if (!samples || count < 256 || sampleRate <= 0) {
             return {-1.0, 0.0, 0.0};
         }
 
-        double sumSq = 0.0;
-        for (size_t i = 0; i < count; ++i) {
-            const double v = static_cast<double>(samples[i]);
-            sumSq += v * v;
+        if (filtered_.size() < count) {
+            filtered_.resize(count, 0.0f);
         }
+
+        // 0. Remove DC offset and apply gentle 45 Hz 1-pole high-pass filter
+        double mean = 0.0;
+        for (size_t i = 0; i < count; ++i) {
+            mean += static_cast<double>(samples[i]);
+        }
+        mean /= static_cast<double>(count);
+
+        const double rc = 1.0 / (2.0 * 3.14159265358979323846 * 45.0);
+        const double dt = 1.0 / static_cast<double>(sampleRate);
+        const float hpAlpha = static_cast<float>(rc / (rc + dt));
+        float prevIn = static_cast<float>(static_cast<double>(samples[0]) - mean);
+        float prevOut = 0.0f;
+        double sumSq = 0.0;
+
+        for (size_t i = 0; i < count; ++i) {
+            const float centered = static_cast<float>(static_cast<double>(samples[i]) - mean);
+            const float out = hpAlpha * (prevOut + centered - prevIn);
+            prevIn = centered;
+            prevOut = out;
+            filtered_[i] = out;
+            sumSq += static_cast<double>(out) * static_cast<double>(out);
+        }
+
         const double rms = std::sqrt(sumSq / static_cast<double>(count));
         if (rms < static_cast<double>(rmsGate)) {
             return {-1.0, 0.0, rms};
@@ -59,7 +82,7 @@ public:
         for (size_t tau = 1; tau <= maxTau; ++tau) {
             float sum = 0.0f;
             for (size_t j = 0; j < halfSize; ++j) {
-                const float delta = samples[j] - samples[j + tau];
+                const float delta = filtered_[j] - filtered_[j + tau];
                 sum += delta * delta;
             }
             diff_[tau] = sum;
@@ -102,6 +125,56 @@ public:
             }
         }
 
+        // 3b. Octave-up guard: check if 2*tau (octave lower) is a significantly deeper dip
+        if (bestVal > 0.06f) {
+            const size_t doubleLo =
+                static_cast<size_t>(std::lround(static_cast<double>(bestTau) * 1.92));
+            const size_t doubleHi = std::min(
+                maxTau, static_cast<size_t>(std::lround(static_cast<double>(bestTau) * 2.08)));
+            if (doubleLo <= maxTau && doubleHi >= doubleLo) {
+                size_t subTau = 0;
+                float subVal = 1.0f;
+                for (size_t tau = doubleLo; tau <= doubleHi; ++tau) {
+                    if (diff_[tau] < subVal) {
+                        subVal = diff_[tau];
+                        subTau = tau;
+                    }
+                }
+                if (subTau > 0 && subVal < bestVal * 0.65f && (bestVal - subVal) > 0.04f) {
+                    bestTau = subTau;
+                    bestVal = subVal;
+                }
+            }
+        }
+
+        // 3c. Continuity preference against octave flip-flopping when prevFreq is known
+        if (prevFreq >= minFreq && prevFreq <= maxFreq && std::isfinite(prevFreq)) {
+            const double prevTau = static_cast<double>(sampleRate) / prevFreq;
+            const double ratio = static_cast<double>(bestTau) / prevTau;
+            const bool isOctaveFlip =
+                std::abs(ratio - 0.5) < 0.09 || std::abs(ratio - 2.0) < 0.18;
+            if (isOctaveFlip) {
+                const size_t nearLo = std::max(
+                    minTau, static_cast<size_t>(std::floor(prevTau * 0.88)));
+                const size_t nearHi = std::min(
+                    maxTau, static_cast<size_t>(std::ceil(prevTau * 1.12)));
+                if (nearHi >= nearLo) {
+                    size_t nearTau = 0;
+                    float nearVal = 1.0f;
+                    for (size_t tau = nearLo; tau <= nearHi; ++tau) {
+                        if (diff_[tau] < nearVal) {
+                            nearVal = diff_[tau];
+                            nearTau = tau;
+                        }
+                    }
+                    if (nearTau > 0 && nearVal < 0.25f && nearVal <= bestVal + 0.09f) {
+                        bestTau = nearTau;
+                        bestVal = nearVal;
+                    }
+                }
+            }
+        }
+
         // 4. Parabolic interpolation around bestTau
         double refinedTau = static_cast<double>(bestTau);
         if (bestTau > 1 && bestTau + 1 <= maxTau) {
@@ -127,6 +200,7 @@ public:
     }
 
 private:
+    std::vector<float> filtered_;
     std::vector<float> diff_;
 };
 

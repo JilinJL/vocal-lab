@@ -72,4 +72,16 @@ describe('practice grading', () => {
     expect(summary.score).toBe(60)
     expect(summary.missedMidis).toEqual([64])
   })
+
+  it('ignores isolated octave glitch frames and tolerates natural moderate vocal clarity', () => {
+    const win = { noteId: 'n4', midi: 60, start: 0, end: 1.5 }
+    const frames = makeFrames(0.15, 1.45, 60, (t) => Math.sin(t * 2 * Math.PI * 5.2) * 12, 0.025, 0.66)
+    // Inject 2 isolated octave-up glitch frames
+    frames[12] = { time: frames[12]!.time, frequency: midiToFrequency(72, 440), clarity: 0.85, rms: 0.08 }
+    frames[13] = { time: frames[13]!.time, frequency: midiToFrequency(72, 440), clarity: 0.85, rms: 0.08 }
+
+    const res = gradeNote(frames, win, baseOptions)
+    expect(res.grade).toBe('perfect')
+    expect(Math.abs(res.meanCents)).toBeLessThan(12)
+  })
 })

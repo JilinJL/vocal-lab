@@ -39,6 +39,8 @@ export class PitchEngine {
   private starting = false
   private sessionToken = 0
   private lastEmitPerf = 0
+  private lastTrackedFrequency: number | null = null
+  private unvoicedStreak = 0
 
   private readonly fftSize: number
   private readonly minIntervalMs: number
@@ -170,6 +172,8 @@ export class PitchEngine {
       this.running = true
       this.starting = false
       this.lastEmitPerf = 0
+      this.lastTrackedFrequency = null
+      this.unvoicedStreak = 0
       this.emitState(true)
 
       const tick = (now: number) => {
@@ -183,9 +187,19 @@ export class PitchEngine {
           const detection = detectPitchYin(this.timeDomainBuffer, sampleRate, {
             minFrequency: this.minFrequency,
             maxFrequency: this.maxFrequency,
-            threshold: 0.14,
-            rmsThreshold: 0.0085,
+            threshold: 0.16,
+            rmsThreshold: 0.0045,
+            prevFrequency: this.lastTrackedFrequency,
           })
+          if (detection.frequency !== null && detection.clarity >= 0.58) {
+            this.lastTrackedFrequency = detection.frequency
+            this.unvoicedStreak = 0
+          } else {
+            this.unvoicedStreak++
+            if (this.unvoicedStreak >= 6) {
+              this.lastTrackedFrequency = null
+            }
+          }
           const windowCenterTime = Math.max(
             0,
             ctx.currentTime - this.timeDomainBuffer.length / (2 * sampleRate),
@@ -230,7 +244,6 @@ export class PitchEngine {
     try {
       const handle = await VocalLabAudio.addListener('pitchFrame', (ev) => {
         if (!this.running || token !== this.sessionToken) return
-        updateNativeClockAnchor(ev.time)
         const frame: PitchFrame = {
           time: ev.time,
           frequency:

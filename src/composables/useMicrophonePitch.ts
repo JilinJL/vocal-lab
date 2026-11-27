@@ -7,6 +7,7 @@ import {
   type PitchSample,
 } from '../audio/pitchMath'
 import { generateDemoVocalPhrase } from '../audio/demoPhrase'
+import { PitchStabilizer } from '../audio/pitchStabilizer'
 import { PitchEngine, type PitchFrame } from '../engine/pitchEngine'
 import { getAudioTime } from '../engine/audioContext'
 
@@ -36,9 +37,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
 
   let sessionBaseTime = 0
   let segmentStartAudioTime = 0
-  let recentMidis: number[] = []
-  let smoothedMidi: number | null = null
-  let silenceFrames = 0
+  const stabilizer = new PitchStabilizer()
 
   // Recalculate MIDI/pitch description if A4 calibration changes
   watch(a4Hz, (newA4) => {
@@ -87,67 +86,41 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     }
   })
 
-  function medianOfThree(a: number, b: number, c: number): number {
-    if ((a >= b && a <= c) || (a <= b && a >= c)) return a
-    if ((b >= a && b <= c) || (b <= a && b >= c)) return b
-    return c
-  }
-
   function handleFrame(frame: PitchFrame) {
     // Smooth VU meter visually
-    const normalizedRms = Math.min(1, Math.pow(frame.rms * 6.5, 0.72))
+    const normalizedRms = Math.min(1, Math.pow(frame.rms * 8.0, 0.68))
     inputLevel.value = inputLevel.value * 0.65 + normalizedRms * 0.35
 
     const elapsed = Math.max(sessionBaseTime, sessionBaseTime + (frame.time - segmentStartAudioTime))
     currentTime.value = elapsed
 
-    let acceptedMidi: number | null = null
-    let acceptedFreq: number | null = null
+    const stabilized = stabilizer.process(
+      {
+        time: elapsed,
+        frequency: frame.frequency,
+        clarity: frame.clarity,
+        rms: frame.rms,
+      },
+      a4Hz.value,
+    )
 
-    if (frame.frequency !== null && frame.clarity >= 0.76) {
-      silenceFrames = 0
-      const rawMidi = frequencyToMidi(frame.frequency, a4Hz.value)
-
-      // Keep short 3-sample median window to suppress single-frame consonant glitches
-      recentMidis.push(rawMidi)
-      if (recentMidis.length > 3) recentMidis.shift()
-
-      const filteredMidi =
-        recentMidis.length === 3
-          ? medianOfThree(recentMidis[0]!, recentMidis[1]!, recentMidis[2]!)
-          : rawMidi
-
-      // Smooth gently while preserving vocal vibrato and runs
-      if (smoothedMidi === null || Math.abs(filteredMidi - smoothedMidi) > 1.8) {
-        smoothedMidi = filteredMidi
-      } else {
-        smoothedMidi = smoothedMidi * 0.32 + filteredMidi * 0.68
-      }
-
-      acceptedMidi = smoothedMidi
-      acceptedFreq = frame.frequency
-      clarity.value = frame.clarity
-
-      const info = describePitchFromMidi(acceptedMidi, a4Hz.value, acceptedFreq)
+    if (stabilized.midi !== null && stabilized.frequency !== null) {
+      clarity.value = stabilized.clarity
+      const info = describePitchFromMidi(stabilized.midi, a4Hz.value, stabilized.frequency)
       currentPitch.value = info
       lastStablePitch.value = info
     } else {
-      silenceFrames++
       clarity.value = 0
-      if (silenceFrames >= 3) {
-        recentMidis = []
-        smoothedMidi = null
-        currentPitch.value = null
-      }
+      currentPitch.value = null
     }
 
     if (recordHistory.value) {
       const list = samples.value
       list.push({
         time: elapsed,
-        frequency: acceptedFreq,
-        midi: acceptedMidi,
-        clarity: frame.clarity,
+        frequency: stabilized.frequency,
+        midi: stabilized.midi,
+        clarity: stabilized.clarity,
         rms: frame.rms,
       })
       if (list.length > MAX_SAMPLES) {
@@ -168,6 +141,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
       inputLevel.value = 0
       clarity.value = 0
       currentPitch.value = null
+      stabilizer.reset()
     }
   })
 
@@ -197,9 +171,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
       sessionBaseTime = 0
     }
 
-    recentMidis = []
-    smoothedMidi = null
-    silenceFrames = 0
+    stabilizer.reset()
     isDemo.value = false
 
     const res = await engine.start()
@@ -221,8 +193,7 @@ export function useMicrophonePitch(a4Hz: Ref<number>) {
     currentTime.value = 0
     currentPitch.value = null
     lastStablePitch.value = null
-    recentMidis = []
-    smoothedMidi = null
+    stabilizer.reset()
     isDemo.value = false
     errorMessage.value = null
     if (isListening.value) {

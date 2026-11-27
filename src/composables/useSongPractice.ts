@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, type Ref } from 'vue'
-import { frequencyToMidi, midiToNoteParts, type PitchSample } from '../audio/pitchMath'
+import { midiToNoteParts, type PitchSample } from '../audio/pitchMath'
+import { PitchStabilizer } from '../audio/pitchStabilizer'
 import type { PianoSynthesizer, ScheduledNoteHandle } from '../audio/pianoSynth'
 import { ensureAudioContextRunning, getAudioTime, getSharedAudioContext } from '../engine/audioContext'
 import type { PitchEngine, PitchFrame } from '../engine/pitchEngine'
@@ -78,6 +79,7 @@ export function useSongPractice(deps: SongPracticeDeps) {
   let popupCounter = 0
   let lastProvisionalCheck = 0
   let sessionA4Snapshot = 440
+  const stabilizer = new PitchStabilizer()
 
   const selectedSong = computed<ImportedSong>(() => {
     return songs.value.find((s) => s.id === selectedSongId.value) ?? songs.value[0]!
@@ -313,26 +315,36 @@ export function useSongPractice(deps: SongPracticeDeps) {
 
   function attachPitchListener() {
     detachPitchListener()
+    stabilizer.reset()
     unsubPitch = deps.engine.subscribe((frame) => {
       if (status.value !== 'running' || isPreviewOnly.value) return
       const relTime = frame.time - sessionOriginAudioTime
       if (relTime < -0.1) return
 
+      const stabilized = stabilizer.process(
+        {
+          time: relTime,
+          frequency: frame.frequency,
+          clarity: frame.clarity,
+          rms: frame.rms,
+        },
+        sessionA4Snapshot,
+      )
+
       rawFrames.push({
         time: relTime,
-        frequency: frame.frequency,
-        clarity: frame.clarity,
+        frequency: stabilized.frequency,
+        clarity: stabilized.clarity,
         rms: frame.rms,
       })
 
-      const valid = frame.frequency !== null && frame.clarity >= 0.76
-      const midiVal = valid ? frequencyToMidi(frame.frequency!, sessionA4Snapshot) : null
+      const valid = stabilized.midi !== null && stabilized.frequency !== null
       const list = samples.value
       list.push({
         time: Math.max(0, relTime),
-        frequency: valid ? frame.frequency : null,
-        midi: midiVal,
-        clarity: frame.clarity,
+        frequency: stabilized.frequency,
+        midi: stabilized.midi,
+        clarity: stabilized.clarity,
         rms: frame.rms,
       })
       if (list.length > 18000) {
@@ -343,7 +355,7 @@ export function useSongPractice(deps: SongPracticeDeps) {
       const target = currentNote.value
       if (target && valid && relTime >= target.start && relTime <= target.start + target.duration) {
         const { cents } = computeCentsError(
-          frame.frequency!,
+          stabilized.frequency!,
           target.midi,
           sessionA4Snapshot,
           settings.allowOctaveTolerance,
@@ -512,7 +524,7 @@ export function useSongPractice(deps: SongPracticeDeps) {
         for (const note of notes) {
           if (gradedIds.has(note.id)) continue
           const noteEnd = note.start + note.duration
-          if (sessionTime >= noteEnd + Math.max(0, latencySec) + 0.04) {
+          if (sessionTime >= noteEnd + Math.max(0, latencySec) + 0.12) {
             gradedIds.add(note.id)
             const res = gradeNote(
               rawFrames,

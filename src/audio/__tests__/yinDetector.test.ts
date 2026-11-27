@@ -45,4 +45,35 @@ describe('detectPitchYin', () => {
     const quiet = makeSine(440, 48000, 4096, 0.002)
     expect(detectPitchYin(quiet, 48000).frequency).toBeNull()
   })
+
+  it('avoids octave-up errors on 2nd-harmonic-heavy phone mic vocal waveforms', () => {
+    const freq = 196.0 // G3
+    const sampleRate = 48000
+    // Simulate phone microphone bass roll-off where 2nd harmonic is louder than fundamental
+    const buf = Float32Array.from({ length: 4096 }, (_, idx) => {
+      const t = idx / sampleRate
+      return (
+        0.09 * Math.sin(2 * Math.PI * freq * t) +
+        0.24 * Math.sin(2 * Math.PI * freq * 2 * t) +
+        0.11 * Math.sin(2 * Math.PI * freq * 3 * t)
+      )
+    })
+    const res = detectPitchYin(buf, sampleRate)
+    expect(res.frequency).not.toBeNull()
+    const cents = 1200 * Math.log2(res.frequency! / freq)
+    expect(Math.abs(cents)).toBeLessThan(10)
+  })
+
+  it('handles DC offset and detects moderately soft singing', () => {
+    const freq = 261.63 // C4
+    const sampleRate = 48000
+    const buf = Float32Array.from({ length: 4096 }, (_, idx) => {
+      const t = idx / sampleRate
+      return 0.15 + 0.015 * Math.sin(2 * Math.PI * freq * t)
+    })
+    const res = detectPitchYin(buf, sampleRate)
+    expect(res.frequency).not.toBeNull()
+    const cents = 1200 * Math.log2(res.frequency! / freq)
+    expect(Math.abs(cents)).toBeLessThan(8)
+  })
 })

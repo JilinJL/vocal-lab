@@ -811,6 +811,10 @@ export function useRhythmSession() {
     gameHistory.value = []
   }
 
+  function reloadHistory(): void {
+    gameHistory.value = loadRhythmHistory()
+  }
+
   onBeforeUnmount(() => {
     stopAll()
   })
@@ -876,5 +880,6 @@ export function useRhythmSession() {
     registerGameTap,
     stopAll,
     clearHistory,
+    reloadHistory,
   }
 }

@@ -9,8 +9,9 @@ import { useMicrophonePitch } from './composables/useMicrophonePitch'
 import { usePiano } from './composables/usePiano'
 import { usePracticeSession } from './composables/usePracticeSession'
 import { useRhythmSession } from './composables/useRhythmSession'
-import { useSettings } from './composables/useSettings'
+import { reloadSettingsFromStorage, useSettings } from './composables/useSettings'
 import { useSongPractice } from './composables/useSongPractice'
+import { useAppUpdate } from './composables/useAppUpdate'
 import StudioHeader, { type AppMode } from './components/StudioHeader.vue'
 import LivePitchMonitor from './components/LivePitchMonitor.vue'
 import PitchCurveCanvas from './components/PitchCurveCanvas.vue'
@@ -32,6 +33,7 @@ const latencyOffsetMs = toRef(settings, 'latencyOffsetMs')
 const isMobile = ref(false)
 const mobileSheetOpen = ref(false)
 const mobilePianoOpen = ref(false)
+const settingsOpen = ref(false)
 let mobileMediaQuery: MediaQueryList | null = null
 let backButtonHandle: PluginListenerHandle | null = null
 
@@ -69,6 +71,18 @@ const songPractice = useSongPractice({
   a4Hz,
 })
 const rhythm = useRhythmSession()
+
+const isBusyPracticing = computed(
+  () =>
+    mic.isListening.value ||
+    practice.status.value === 'running' ||
+    practice.status.value === 'countdown' ||
+    songPractice.status.value === 'running' ||
+    songPractice.status.value === 'countdown' ||
+    rhythm.isActive.value,
+)
+
+const appUpdate = useAppUpdate(isBusyPracticing)
 
 watch(
   mode,
@@ -117,13 +131,7 @@ watch(
 )
 
 watch(
-  () =>
-    mic.isListening.value ||
-    practice.status.value === 'running' ||
-    practice.status.value === 'countdown' ||
-    songPractice.status.value === 'running' ||
-    songPractice.status.value === 'countdown' ||
-    rhythm.isActive.value,
+  isBusyPracticing,
   (active) => {
     setNativeKeepAwake(active)
   },
@@ -156,6 +164,10 @@ onMounted(() => {
     void StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
     void StatusBar.setBackgroundColor({ color: '#11161c' }).catch(() => {})
     void CapApp.addListener('backButton', () => {
+      if (settingsOpen.value) {
+        settingsOpen.value = false
+        return
+      }
       if (mobilePianoOpen.value) {
         mobilePianoOpen.value = false
         return
@@ -365,6 +377,25 @@ function handleOpenRhythmLibrary() {
   }
 }
 
+function handleOpenUpdateFromBanner() {
+  appUpdate.dismissBanner()
+  if (appUpdate.isNativeAndroid) {
+    settingsOpen.value = true
+  } else if (appUpdate.pwaNeedRefresh.value) {
+    void appUpdate.applyPwaUpdate()
+  } else {
+    settingsOpen.value = true
+  }
+}
+
+function handleDataRestored() {
+  reloadSettingsFromStorage()
+  practice.reloadHistory()
+  rhythm.reloadHistory()
+  void songPractice.refreshLibrary()
+  announce('已从备份文件恢复练习记录、设置与导入歌曲')
+}
+
 const mobileRhythmTitle = computed(() => {
   if (rhythm.subView.value === 'beat') return rhythm.activeBasicPreset.value.name
   if (rhythm.subView.value === 'game') return rhythm.activeChallenge.value.name
@@ -391,6 +422,7 @@ const mobileSheetTitle = computed(() => {
   <div class="studio-shell" :class="{ 'is-mobile': isMobile }">
     <StudioHeader
       v-model:mode="mode"
+      v-model:settings-open="settingsOpen"
       :is-listening="mic.isListening.value"
       :is-demo="mic.isDemo.value"
       :has-samples="hasSamples"
@@ -398,9 +430,29 @@ const mobileSheetTitle = computed(() => {
       v-model:a4-hz="a4Hz"
       v-model:auto-follow="autoFollow"
       v-model:latency-offset-ms="latencyOffsetMs"
+      :is-native-android="appUpdate.isNativeAndroid"
+      :current-version-name="appUpdate.currentVersionName.value"
+      :current-version-code="appUpdate.currentVersionCode.value"
+      :signing-fingerprint="appUpdate.signingFingerprint.value"
+      :update-status="appUpdate.status.value"
+      :latest-release="appUpdate.latestRelease.value"
+      :download-progress="appUpdate.downloadProgress.value"
+      :received-bytes="appUpdate.receivedBytes.value"
+      :total-bytes="appUpdate.totalBytes.value"
+      :update-message="appUpdate.statusMessage.value"
+      :update-error="appUpdate.errorMessage.value"
+      :has-update="appUpdate.hasUpdate.value"
+      :pwa-need-refresh="appUpdate.pwaNeedRefresh.value"
       @toggle-listen="handleToggleListen"
       @clear="handleClear"
       @load-demo="handleLoadDemo"
+      @check-update="appUpdate.checkForUpdate(false)"
+      @download-update="appUpdate.startDownload()"
+      @cancel-download="appUpdate.cancelDownload()"
+      @install-update="appUpdate.installDownloaded()"
+      @open-permission-settings="appUpdate.openPermissionSettings()"
+      @apply-pwa-update="appUpdate.applyPwaUpdate()"
+      @data-restored="handleDataRestored"
     />
 
     <p role="status" class="visually-hidden">{{ statusAnnouncement }}</p>
@@ -778,6 +830,41 @@ const mobileSheetTitle = computed(() => {
       />
     </BottomSheet>
 
+    <!-- Non-intrusive post-practice update prompt -->
+    <Transition name="update-banner-fade">
+      <div
+        v-if="appUpdate.showBanner.value && !settingsOpen"
+        class="update-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="update-banner-copy">
+          <span class="update-banner-dot" aria-hidden="true"></span>
+          <span v-if="appUpdate.isNativeAndroid && appUpdate.latestRelease.value">
+            发现新版本 v{{ appUpdate.latestRelease.value.versionName }}
+          </span>
+          <span v-else>在线版新版本已就绪</span>
+        </div>
+        <div class="update-banner-actions">
+          <button
+            type="button"
+            class="update-banner-cta"
+            @click="handleOpenUpdateFromBanner"
+          >
+            {{ appUpdate.isNativeAndroid ? '去更新' : '刷新生效' }}
+          </button>
+          <button
+            type="button"
+            class="update-banner-close"
+            aria-label="稍后提醒"
+            @click="appUpdate.dismissBanner()"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Mobile swipeable Piano Bottom Sheet -->
     <BottomSheet
       v-if="isMobile"
@@ -847,7 +934,86 @@ const mobileSheetTitle = computed(() => {
   overflow-y: visible !important;
 }
 
+.update-banner {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 48;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.65rem 0.55rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background-color: color-mix(in oklab, var(--surface-panel) 96%, transparent);
+  border: 1px solid var(--accent-brass);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.update-banner-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-ivory);
+}
+
+.update-banner-dot {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background-color: var(--pitch-accurate);
+  flex-shrink: 0;
+}
+
+.update-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.update-banner-cta {
+  min-block-size: 1.9rem;
+  padding: 0.2rem 0.75rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-brass);
+  background-color: var(--accent-brass);
+  color: var(--accent-brass-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.update-banner-close {
+  min-inline-size: 1.9rem;
+  min-block-size: 1.9rem;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.update-banner-fade-enter-active,
+.update-banner-fade-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.update-banner-fade-enter-from,
+.update-banner-fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
 @media (max-width: 900px) {
+  .update-banner {
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: calc(6.9rem + env(safe-area-inset-bottom));
+  }
+
   .studio-shell {
     block-size: 100dvh;
     max-block-size: 100dvh;

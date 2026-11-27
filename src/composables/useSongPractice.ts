@@ -693,6 +693,7 @@ export function useSongPractice(deps: SongPracticeDeps) {
     importFile,
     cancelImport,
     removeSong,
+    refreshLibrary,
     previewMelody: () => startPlayback(true, 0),
     startSingAlong: () => startPlayback(false, 0),
     pause,

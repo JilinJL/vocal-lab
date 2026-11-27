@@ -497,6 +497,10 @@ export function usePracticeSession(deps: PracticeDeps) {
     history.value = []
   }
 
+  function reloadHistory() {
+    history.value = loadPracticeHistory()
+  }
+
   function handleVisibilityChange() {
     if (document.hidden && (status.value === 'running' || status.value === 'countdown')) {
       pause('页面切入后台，练习已暂停。返回后点击「继续」从当前音重来。')
@@ -540,5 +544,6 @@ export function usePracticeSession(deps: PracticeDeps) {
     stop,
     auditionNote,
     clearHistory,
+    reloadHistory,
   }
 }

@@ -1,5 +1,20 @@
 apply plugin: 'com.android.application'
 
+def releaseKeystoreProps = new Properties()
+def localKeystoreFile = rootProject.file("keystore.properties")
+def homeKeystoreFile = new File(System.getProperty("user.home"), ".vocallab-signing/keystore.properties")
+if (localKeystoreFile.exists()) {
+    localKeystoreFile.withInputStream { releaseKeystoreProps.load(it) }
+} else if (homeKeystoreFile.exists()) {
+    homeKeystoreFile.withInputStream { releaseKeystoreProps.load(it) }
+}
+
+def releaseStorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: releaseKeystoreProps.getProperty("storeFile")
+def releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: releaseKeystoreProps.getProperty("storePassword")
+def releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: releaseKeystoreProps.getProperty("keyAlias")
+def releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: releaseKeystoreProps.getProperty("keyPassword")
+def hasReleaseSigning = releaseStorePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword && file(releaseStorePath).exists()
+
 android {
     namespace = "com.vocallab.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -8,8 +23,8 @@ android {
         applicationId "com.vocallab.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 141
-        versionName "1.4.1"
+        versionCode 150
+        versionName "1.5.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
@@ -35,11 +50,38 @@ android {
             version "3.22.1"
         }
     }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
     buildTypes {
         release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def isReleaseBuild = taskGraph.allTasks.any {
+        it.name.toLowerCase().contains("release") && it.project.path == ":app"
+    }
+    if (isReleaseBuild && !hasReleaseSigning) {
+        throw new GradleException(
+            "Release signing is not configured. Provide ANDROID_KEYSTORE_PATH/PASSWORD/ALIAS env vars or keystore.properties."
+        )
     }
 }
 

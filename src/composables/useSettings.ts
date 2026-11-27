@@ -163,3 +163,9 @@ export function useSettings(): VocalLabSettings {
   }
   return singletonSettings
 }
+
+export function reloadSettingsFromStorage(): void {
+  if (!singletonSettings) return
+  const fresh = loadStoredSettings()
+  Object.assign(singletonSettings, fresh)
+}

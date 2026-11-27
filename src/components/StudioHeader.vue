@@ -1,6 +1,18 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { useToolbarFocusgroup } from '../composables/useToolbarFocusgroup'
+import type { UpdateStatus } from '../composables/useAppUpdate'
+import {
+  formatFileSize,
+  formatShortFingerprint,
+  type RemoteReleaseManifest,
+} from '../engine/nativeUpdaterPlugin'
+import {
+  exportBackupToDevice,
+  getLocalDataStats,
+  importBackupFromJson,
+  type LocalDataStats,
+} from '../utils/backup'
 
 export type AppMode = 'monitor' | 'practice' | 'rhythm' | 'songs'
 
@@ -13,12 +25,27 @@ interface Props {
   a4Hz: number
   autoFollow: boolean
   latencyOffsetMs: number
+  settingsOpen?: boolean
+  isNativeAndroid: boolean
+  currentVersionName: string
+  currentVersionCode: number | null
+  signingFingerprint: string
+  updateStatus: UpdateStatus
+  latestRelease: RemoteReleaseManifest | null
+  downloadProgress: number
+  receivedBytes: number
+  totalBytes: number
+  updateMessage: string | null
+  updateError: string | null
+  hasUpdate: boolean
+  pwaNeedRefresh: boolean
 }
 
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
   'update:mode': [value: AppMode]
+  'update:settingsOpen': [value: boolean]
   toggleListen: []
   clear: []
   loadDemo: []
@@ -26,6 +53,13 @@ const emit = defineEmits<{
   'update:a4Hz': [value: number]
   'update:autoFollow': [value: boolean]
   'update:latencyOffsetMs': [value: number]
+  checkUpdate: []
+  downloadUpdate: []
+  cancelDownload: []
+  installUpdate: []
+  openPermissionSettings: []
+  applyPwaUpdate: []
+  dataRestored: []
 }>()
 
 const toolbarEl = useTemplateRef<HTMLElement>('toolbarRef')
@@ -39,7 +73,76 @@ const modeOptions: ReadonlyArray<{ id: AppMode; label: string }> = [
   { id: 'songs', label: '歌曲跟练' },
 ]
 
-const settingsOpen = ref(false)
+const internalSettingsOpen = ref(false)
+const isSettingsOpen = computed({
+  get: () => (props.settingsOpen !== undefined ? props.settingsOpen : internalSettingsOpen.value),
+  set: (val: boolean) => {
+    internalSettingsOpen.value = val
+    emit('update:settingsOpen', val)
+  },
+})
+
+const dataStats = ref<LocalDataStats>({ practiceCount: 0, rhythmCount: 0, songCount: 0 })
+const backupBusy = ref(false)
+const backupMessage = ref<string | null>(null)
+const backupError = ref<string | null>(null)
+const backupFileInputRef = ref<HTMLInputElement | null>(null)
+
+const shortFingerprint = computed(() => formatShortFingerprint(props.signingFingerprint))
+
+async function refreshDataStats() {
+  dataStats.value = await getLocalDataStats()
+}
+
+watch(isSettingsOpen, (open) => {
+  if (open) {
+    backupMessage.value = null
+    backupError.value = null
+    void refreshDataStats()
+  }
+})
+
+async function handleExportBackup() {
+  if (backupBusy.value) return
+  backupBusy.value = true
+  backupMessage.value = null
+  backupError.value = null
+  try {
+    const res = await exportBackupToDevice()
+    dataStats.value = res.stats
+    backupMessage.value = `备份已导出：${res.location}`
+  } catch (err) {
+    backupError.value = err instanceof Error ? err.message : '导出备份失败，请稍后重试。'
+  } finally {
+    backupBusy.value = false
+  }
+}
+
+function triggerImportBackup() {
+  backupFileInputRef.value?.click()
+}
+
+async function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || backupBusy.value) return
+
+  backupBusy.value = true
+  backupMessage.value = null
+  backupError.value = null
+  try {
+    const text = await file.text()
+    const summary = await importBackupFromJson(text)
+    await refreshDataStats()
+    emit('dataRestored')
+    backupMessage.value = `已恢复：练习记录 ${summary.practiceCount} 条、节奏记录 ${summary.rhythmCount} 条、导入歌曲 ${summary.songCount} 首。`
+  } catch (err) {
+    backupError.value = err instanceof Error ? err.message : '导入备份失败，请检查文件是否正确。'
+  } finally {
+    backupBusy.value = false
+  }
+}
 
 function handleClear() {
   if (!props.hasSamples) return
@@ -61,8 +164,8 @@ function onLatencyInput(event: Event) {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && settingsOpen.value) {
-    settingsOpen.value = false
+  if (event.key === 'Escape' && isSettingsOpen.value) {
+    isSettingsOpen.value = false
   }
 }
 
@@ -258,10 +361,10 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="btn-ghost settings-trigger"
-          :aria-expanded="settingsOpen"
+          :aria-expanded="isSettingsOpen"
           aria-haspopup="dialog"
-          title="打开调音、时间轴与音频延迟设置"
-          @click="settingsOpen = !settingsOpen"
+          title="打开调音、版本更新与数据备份设置"
+          @click="isSettingsOpen = !isSettingsOpen"
         >
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.35" />
@@ -274,33 +377,34 @@ onBeforeUnmount(() => {
           </svg>
           <span class="settings-label">设置</span>
           <span class="mobile-a4-chip tabular">{{ a4Hz }}Hz</span>
+          <span v-if="hasUpdate" class="settings-update-dot" aria-label="有可用新版本"></span>
         </button>
       </div>
     </div>
 
     <Teleport to="body">
       <div
-        v-if="settingsOpen"
+        v-if="isSettingsOpen"
         class="settings-backdrop"
         role="dialog"
         aria-modal="true"
         aria-label="VocalLab 参数设置"
-        @click.self="settingsOpen = false"
+        @click.self="isSettingsOpen = false"
       >
         <div class="settings-sheet">
           <div class="sheet-head">
-            <h2 class="sheet-title">调音与延迟设置</h2>
+            <h2 class="sheet-title">设置与版本更新</h2>
             <button
               type="button"
               class="sheet-close"
               aria-label="关闭设置面板"
-              @click="settingsOpen = false"
+              @click="isSettingsOpen = false"
             >
               ×
             </button>
           </div>
 
-          <div class="sheet-body">
+          <div class="sheet-body studio-scroll">
             <div class="sheet-row">
               <div class="sheet-label-group">
                 <span class="sheet-label">A4 标准音基准</span>
@@ -393,6 +497,196 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
+
+            <div class="sheet-divider"></div>
+
+            <!-- Version & In-App Update Section -->
+            <section class="sheet-card" aria-label="版本更新">
+              <div class="sheet-card-head">
+                <div class="sheet-label-group">
+                  <span class="sheet-label">版本更新</span>
+                  <span class="sheet-desc tabular">
+                    当前 v{{ currentVersionName
+                    }}<template v-if="currentVersionCode !== null"> · Build {{ currentVersionCode }}</template
+                    ><template v-else> · 在线版</template>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  class="btn-ghost btn-xs"
+                  :disabled="updateStatus === 'checking' || updateStatus === 'downloading' || updateStatus === 'verifying'"
+                  @click="emit('checkUpdate')"
+                >
+                  {{ updateStatus === 'checking' ? '检查中…' : '检查更新' }}
+                </button>
+              </div>
+
+              <p v-if="isNativeAndroid && signingFingerprint" class="cert-line tabular">
+                签名指纹：{{ shortFingerprint }}
+              </p>
+
+              <!-- Native Android update card -->
+              <template v-if="isNativeAndroid">
+                <div
+                  v-if="latestRelease && (updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'verifying' || updateStatus === 'ready' || updateStatus === 'needs-permission')"
+                  class="update-release-box"
+                >
+                  <div class="update-release-meta">
+                    <strong class="update-release-ver tabular">
+                      新版本 v{{ latestRelease.versionName }}
+                    </strong>
+                    <span class="update-release-size tabular">
+                      Build {{ latestRelease.versionCode }} · {{ formatFileSize(latestRelease.sizeBytes) }}
+                    </span>
+                  </div>
+                  <p v-if="latestRelease.releaseNotes" class="update-notes">
+                    {{ latestRelease.releaseNotes }}
+                  </p>
+
+                  <div
+                    v-if="updateStatus === 'downloading' || updateStatus === 'verifying'"
+                    class="download-progress-wrap"
+                  >
+                    <div class="download-progress-track">
+                      <div
+                        class="download-progress-fill"
+                        :style="{ width: `${Math.max(4, Math.min(100, downloadProgress))}%` }"
+                      ></div>
+                    </div>
+                    <div class="download-progress-info tabular">
+                      <span>
+                        {{ updateStatus === 'verifying' ? '正在校验 SHA-256…' : `${downloadProgress}%` }}
+                      </span>
+                      <span v-if="totalBytes > 0">
+                        {{ formatFileSize(receivedBytes) }} / {{ formatFileSize(totalBytes) }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="update-actions">
+                    <button
+                      v-if="updateStatus === 'available'"
+                      type="button"
+                      class="btn-primary btn-sm"
+                      @click="emit('downloadUpdate')"
+                    >
+                      下载更新
+                    </button>
+
+                    <button
+                      v-else-if="updateStatus === 'downloading'"
+                      type="button"
+                      class="btn-ghost btn-sm"
+                      @click="emit('cancelDownload')"
+                    >
+                      取消下载
+                    </button>
+
+                    <template v-else-if="updateStatus === 'ready'">
+                      <button
+                        type="button"
+                        class="btn-primary btn-sm"
+                        @click="emit('installUpdate')"
+                      >
+                        立即安装
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm"
+                        @click="emit('downloadUpdate')"
+                      >
+                        重新下载
+                      </button>
+                    </template>
+
+                    <template v-else-if="updateStatus === 'needs-permission'">
+                      <button
+                        type="button"
+                        class="btn-primary btn-sm"
+                        @click="emit('openPermissionSettings')"
+                      >
+                        前往开启安装授权
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm"
+                        @click="emit('installUpdate')"
+                      >
+                        继续安装
+                      </button>
+                    </template>
+                  </div>
+                </div>
+
+                <p v-if="updateError" class="sheet-feedback is-error">{{ updateError }}</p>
+                <div v-if="updateStatus === 'error'" class="update-actions">
+                  <button
+                    type="button"
+                    class="btn-primary btn-sm"
+                    @click="latestRelease ? emit('downloadUpdate') : emit('checkUpdate')"
+                  >
+                    {{ latestRelease ? '重试下载' : '重试检查' }}
+                  </button>
+                </div>
+                <p v-else-if="updateMessage" class="sheet-feedback">{{ updateMessage }}</p>
+              </template>
+
+              <!-- Online Web / PWA update card -->
+              <template v-else>
+                <div v-if="pwaNeedRefresh" class="update-actions">
+                  <button
+                    type="button"
+                    class="btn-primary btn-sm"
+                    @click="emit('applyPwaUpdate')"
+                  >
+                    刷新启用新版
+                  </button>
+                </div>
+                <p v-if="updateError" class="sheet-feedback is-error">{{ updateError }}</p>
+                <p v-else-if="updateMessage" class="sheet-feedback">{{ updateMessage }}</p>
+              </template>
+            </section>
+
+            <!-- Data Backup & Migration Section -->
+            <section class="sheet-card" aria-label="数据备份与迁移">
+              <div class="sheet-label-group">
+                <span class="sheet-label">数据备份与迁移</span>
+                <span class="sheet-desc tabular">
+                  音准/跟唱 {{ dataStats.practiceCount }} 条 · 节奏 {{ dataStats.rhythmCount }} 条 · 导入歌曲
+                  {{ dataStats.songCount }} 首
+                </span>
+              </div>
+              <p class="sheet-desc">
+                正式签名版覆盖安装会自动保留本地数据；从早期测试包迁移或换机时可导出 JSON 备份再一键恢复。
+              </p>
+              <div class="update-actions">
+                <button
+                  type="button"
+                  class="btn-ghost btn-sm"
+                  :disabled="backupBusy"
+                  @click="handleExportBackup"
+                >
+                  {{ backupBusy ? '处理中…' : '导出备份' }}
+                </button>
+                <button
+                  type="button"
+                  class="btn-ghost btn-sm"
+                  :disabled="backupBusy"
+                  @click="triggerImportBackup"
+                >
+                  导入恢复
+                </button>
+                <input
+                  ref="backupFileInputRef"
+                  type="file"
+                  accept=".json,application/json"
+                  class="visually-hidden"
+                  @change="handleImportFileChange"
+                />
+              </div>
+              <p v-if="backupError" class="sheet-feedback is-error">{{ backupError }}</p>
+              <p v-else-if="backupMessage" class="sheet-feedback is-ok">{{ backupMessage }}</p>
+            </section>
           </div>
         </div>
       </div>
@@ -667,11 +961,147 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
+.settings-trigger {
+  position: relative;
+}
+
+.settings-update-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background-color: var(--pitch-accurate);
+  box-shadow: 0 0 0 2px var(--surface-panel);
+}
+
 .sheet-body {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
+  max-block-size: min(76dvh, 620px);
+  overflow-y: auto;
   padding: 1rem 1.1rem max(1.1rem, env(safe-area-inset-bottom));
+}
+
+.sheet-divider {
+  block-size: 1px;
+  background-color: var(--border-hairline);
+}
+
+.sheet-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.8rem 0.88rem;
+  border-radius: var(--radius-md);
+  background-color: var(--surface-well);
+  border: 1px solid var(--border-hairline);
+}
+
+.sheet-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.cert-line {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+
+.update-release-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+}
+
+.update-release-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.update-release-ver {
+  font-size: 0.86rem;
+  color: var(--accent-brass);
+}
+
+.update-release-size {
+  font-size: 0.74rem;
+  color: var(--ink-secondary);
+}
+
+.update-notes {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--ink-secondary);
+  white-space: pre-line;
+}
+
+.download-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.download-progress-track {
+  block-size: 6px;
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-raised);
+  overflow: hidden;
+}
+
+.download-progress-fill {
+  block-size: 100%;
+  border-radius: var(--radius-pill);
+  background-color: var(--pitch-accurate);
+  transition: width 140ms ease;
+}
+
+.download-progress-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--ink-secondary);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.btn-sm {
+  min-block-size: 2.05rem;
+  padding: 0.3rem 0.85rem;
+  font-size: 0.8rem;
+}
+
+.sheet-feedback {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--ink-secondary);
+}
+
+.sheet-feedback.is-ok {
+  color: var(--pitch-accurate);
+}
+
+.sheet-feedback.is-error {
+  color: var(--pitch-sharp);
 }
 
 .sheet-row {

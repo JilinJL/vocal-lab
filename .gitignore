@@ -15,3 +15,12 @@ dist/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# Android release signing secrets & build outputs
+*.jks
+*.keystore
+*.p12
+keystore.properties
+android/keystore.properties
+android/app/release/
+*.apk
